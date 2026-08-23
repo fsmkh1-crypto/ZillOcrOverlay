@@ -2,6 +2,7 @@ package kr.co.zillocr.overlay.translation
 
 import android.content.Context
 import kr.co.zillocr.overlay.data.AppContextHolder
+import kr.co.zillocr.overlay.data.IgnoreListStore
 import kr.co.zillocr.overlay.data.TranslationSettingsStore
 import kr.co.zillocr.overlay.db.AppDatabase
 import kr.co.zillocr.overlay.db.OcrAliasEntity
@@ -339,8 +340,7 @@ class OpenAiTranslationProvider(
         return lines.size == 1 && lines.first().length >= NARRATION_SINGLE_LINE_CHARS
     }
 
-    private fun normalizeSpeakerLabel(text: String): String =
-        text.trim().trim(*SPEAKER_DECORATION_CHARS).trim()
+    private fun normalizeSpeakerLabel(text: String): String = normalizeSpeakerCandidateSource(text)
 
     private fun rememberSpeaker(source: String, target: String) {
         synchronized(stickyLock) {
@@ -605,8 +605,19 @@ class OpenAiTranslationProvider(
     )
 
     companion object {
-        data class PendingSpeakerCandidate(val source: String, val suggestedTarget: String)
-        data class PendingAliasCandidate(val observed: String, val canonical: String, val target: String)
+        data class PendingSpeakerCandidate(
+            val source: String,
+            val suggestedTarget: String,
+            val hitCount: Int = 1,
+            val firstSeenAt: Long = System.currentTimeMillis()
+        )
+        data class PendingAliasCandidate(
+            val observed: String,
+            val canonical: String,
+            val target: String,
+            val hitCount: Int = 1,
+            val firstSeenAt: Long = System.currentTimeMillis()
+        )
 
         private const val API_URL = "https://api.openai.com/v1/responses"
         private const val DEFAULT_MODEL = TranslationSettingsStore.DEFAULT_MODEL
@@ -645,49 +656,119 @@ class OpenAiTranslationProvider(
         private val stickyLock = Any()
         @Volatile private var stickySpeaker: SpeakerMemory? = null
         private val candidateLock = Any()
-        @Volatile private var pendingSpeakerCandidate: PendingSpeakerCandidate? = null
-        @Volatile private var pendingAliasCandidate: PendingAliasCandidate? = null
+        private val pendingSpeakerCandidates = LinkedHashMap<String, PendingSpeakerCandidate>()
+        private val pendingAliasCandidates = LinkedHashMap<String, PendingAliasCandidate>()
+        private const val MAX_PENDING_SPEAKERS = 50
+        private const val MAX_PENDING_ALIASES = 100
+
+        fun normalizeSpeakerCandidateSource(text: String): String =
+            text.trim().trim(*SPEAKER_DECORATION_CHARS).trim()
 
         private fun publishPendingSpeaker(source: String, target: String) {
-            synchronized(candidateLock) { pendingSpeakerCandidate = PendingSpeakerCandidate(source, target) }
+            val normalized = normalizeSpeakerCandidateSource(source)
+            if (normalized.isBlank()) return
+            val context = AppContextHolder.require()
+            if (IgnoreListStore.isSpeakerIgnored(context, normalized)) return
+            synchronized(candidateLock) {
+                val current = pendingSpeakerCandidates[normalized]
+                pendingSpeakerCandidates[normalized] = if (current == null) {
+                    PendingSpeakerCandidate(normalized, target)
+                } else {
+                    current.copy(hitCount = current.hitCount + 1)
+                }
+                trimCandidateMap(pendingSpeakerCandidates, MAX_PENDING_SPEAKERS) { it.hitCount to it.firstSeenAt }
+            }
         }
 
         private fun publishPendingAlias(observed: String, canonical: String, target: String) {
-            synchronized(candidateLock) { pendingAliasCandidate = PendingAliasCandidate(observed, canonical, target) }
+            val key = observed.trim()
+            if (key.isBlank()) return
+            val context = AppContextHolder.require()
+            if (IgnoreListStore.isAliasIgnored(context, key)) return
+            synchronized(candidateLock) {
+                val current = pendingAliasCandidates[key]
+                pendingAliasCandidates[key] = if (current == null) {
+                    PendingAliasCandidate(key, canonical, target)
+                } else {
+                    current.copy(hitCount = current.hitCount + 1)
+                }
+                trimCandidateMap(pendingAliasCandidates, MAX_PENDING_ALIASES) { it.hitCount to it.firstSeenAt }
+            }
         }
 
-        fun peekPendingSpeakerCandidate(): PendingSpeakerCandidate? = synchronized(candidateLock) {
-            pendingSpeakerCandidate
+        private fun <T> trimCandidateMap(
+            map: LinkedHashMap<String, T>,
+            limit: Int,
+            rank: (T) -> Pair<Int, Long>
+        ) {
+            while (map.size > limit) {
+                val victim = map.entries.minWithOrNull(
+                    compareBy<Map.Entry<String, T>> { rank(it.value).first }
+                        .thenBy { rank(it.value).second }
+                ) ?: return
+                map.remove(victim.key)
+            }
         }
 
-        fun peekPendingAliasCandidate(): PendingAliasCandidate? = synchronized(candidateLock) {
-            pendingAliasCandidate
+        fun pendingSpeakerCandidates(): List<PendingSpeakerCandidate> = synchronized(candidateLock) {
+            pendingSpeakerCandidates.values.sortedWith(compareByDescending<PendingSpeakerCandidate> { it.hitCount }.thenBy { it.firstSeenAt })
         }
 
-        fun approvePendingSpeaker(): PendingSpeakerCandidate? {
-            val candidate = synchronized(candidateLock) {
-                pendingSpeakerCandidate.also { pendingSpeakerCandidate = null }
-            } ?: return null
+        fun pendingAliasCandidates(): List<PendingAliasCandidate> = synchronized(candidateLock) {
+            pendingAliasCandidates.values.sortedWith(compareByDescending<PendingAliasCandidate> { it.hitCount }.thenBy { it.firstSeenAt })
+        }
+
+        fun pendingCandidateCount(): Int = synchronized(candidateLock) {
+            pendingSpeakerCandidates.size + pendingAliasCandidates.size
+        }
+
+        fun peekPendingSpeakerCandidate(): PendingSpeakerCandidate? = pendingSpeakerCandidates().firstOrNull()
+        fun peekPendingAliasCandidate(): PendingAliasCandidate? = pendingAliasCandidates().firstOrNull()
+
+        fun approveSpeakerCandidate(source: String, targetOverride: String? = null): PendingSpeakerCandidate? {
+            val key = normalizeSpeakerCandidateSource(source)
+            val candidate = synchronized(candidateLock) { pendingSpeakerCandidates.remove(key) } ?: return null
+            val target = targetOverride?.trim().takeUnless { it.isNullOrBlank() } ?: candidate.suggestedTarget
             val db = AppDatabase.get(AppContextHolder.require())
-            db.speakerDao().upsert(SpeakerEntity(candidate.source, candidate.suggestedTarget, System.currentTimeMillis()))
+            db.speakerDao().upsert(SpeakerEntity(candidate.source, target, System.currentTimeMillis()))
             synchronized(speakerLock) { speakerCache = null }
-            return candidate
+            return candidate.copy(suggestedTarget = target)
         }
 
-        fun approvePendingAlias(): PendingAliasCandidate? {
-            val candidate = synchronized(candidateLock) {
-                pendingAliasCandidate.also { pendingAliasCandidate = null }
-            } ?: return null
+        fun approveAliasCandidate(observed: String, canonicalOverride: String? = null): PendingAliasCandidate? {
+            val key = observed.trim()
+            val candidate = synchronized(candidateLock) { pendingAliasCandidates.remove(key) } ?: return null
+            val canonical = canonicalOverride?.trim().takeUnless { it.isNullOrBlank() } ?: candidate.canonical
             val db = AppDatabase.get(AppContextHolder.require())
-            db.ocrAliasDao().upsert(OcrAliasEntity(candidate.observed, candidate.canonical, System.currentTimeMillis()))
+            db.ocrAliasDao().upsert(OcrAliasEntity(candidate.observed, canonical, System.currentTimeMillis()))
             synchronized(memoryCache) { memoryCache.clear() }
-            return candidate
+            return candidate.copy(canonical = canonical)
         }
+
+        fun ignoreSpeakerCandidate(source: String): Boolean {
+            val key = normalizeSpeakerCandidateSource(source)
+            val removed = synchronized(candidateLock) { pendingSpeakerCandidates.remove(key) } ?: return false
+            IgnoreListStore.ignoreSpeaker(AppContextHolder.require(), key)
+            return removed.source.isNotBlank()
+        }
+
+        fun ignoreAliasCandidate(observed: String): Boolean {
+            val key = observed.trim()
+            val removed = synchronized(candidateLock) { pendingAliasCandidates.remove(key) } ?: return false
+            IgnoreListStore.ignoreAlias(AppContextHolder.require(), key)
+            return removed.observed.isNotBlank()
+        }
+
+        fun approvePendingSpeaker(): PendingSpeakerCandidate? =
+            peekPendingSpeakerCandidate()?.let { approveSpeakerCandidate(it.source) }
+
+        fun approvePendingAlias(): PendingAliasCandidate? =
+            peekPendingAliasCandidate()?.let { approveAliasCandidate(it.observed) }
 
         fun clearPendingCandidates() {
             synchronized(candidateLock) {
-                pendingSpeakerCandidate = null
-                pendingAliasCandidate = null
+                pendingSpeakerCandidates.clear()
+                pendingAliasCandidates.clear()
             }
         }
 
@@ -696,7 +777,6 @@ class OpenAiTranslationProvider(
             synchronized(glossaryLock) { glossaryCache = null }
             synchronized(speakerLock) { speakerCache = null }
             synchronized(stickyLock) { stickySpeaker = null }
-            clearPendingCandidates()
         }
 
         fun clearDialogueContext() {

@@ -508,17 +508,8 @@ class ScreenOcrService : Service() {
     }
 
     private fun showPendingLearningHintIfNeeded() {
+        // 후보는 조용히 후보함에 보존하고, 실시간 플레이 중에는 Toast를 띄우지 않는다.
         refreshLearningControls()
-        val speaker = OpenAiTranslationProvider.peekPendingSpeakerCandidate()
-        val alias = OpenAiTranslationProvider.peekPendingAliasCandidate()
-        if (speaker != null || alias != null) {
-            val message = buildString {
-                speaker?.let { append("화자 후보 ${it.source} → ${it.suggestedTarget} · ⚙에서 확인") }
-                if (speaker != null && alias != null) append("\n")
-                alias?.let { append("OCR 후보 ${it.observed} → ${it.canonical} · ⚙에서 확인") }
-            }
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-        }
     }
 
     private fun retryLastTranslation() {
@@ -881,13 +872,8 @@ class ScreenOcrService : Service() {
             setBackgroundColor(0x553A2F18)
             setPadding(dp(6), dp(6), dp(6), dp(8))
         }
-        learningGroup.addView(groupLabel("학습 승인 · DB에 저장됨", learning = true))
-        val speakerApprove = panelButton("화자 후보 승인") { requestSpeakerCandidateApproval() }
-        val aliasApprove = panelButton("용어 후보 승인") { requestAliasCandidateApproval() }
-        speakerApprovalButton = speakerApprove
-        aliasApprovalButton = aliasApprove
-        learningGroup.addView(speakerApprove)
-        learningGroup.addView(aliasApprove)
+        learningGroup.addView(groupLabel("학습 · 후보는 조용히 보관됨", learning = true))
+        learningGroup.addView(panelButton("학습 후보함 열기") { openLearningManager() })
         learningGroup.addView(panelButton("이 번역 좋아요") { recordPositiveFeedback() })
         learningGroup.addView(panelButton("번역 직접 수정") { showCorrectionDialog() })
         panel.addView(learningGroup, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -931,22 +917,10 @@ class ScreenOcrService : Service() {
     }
 
     private fun refreshLearningControls() {
-        val speakerCount = if (OpenAiTranslationProvider.peekPendingSpeakerCandidate() != null) 1 else 0
-        val aliasCount = if (OpenAiTranslationProvider.peekPendingAliasCandidate() != null) 1 else 0
-        val total = speakerCount + aliasCount
+        val total = OpenAiTranslationProvider.pendingCandidateCount()
         gearBadgeView?.apply {
             text = total.toString()
             visibility = if (total > 0) View.VISIBLE else View.GONE
-        }
-        speakerApprovalButton?.apply {
-            text = "화자 후보 승인 ($speakerCount)"
-            isEnabled = speakerCount > 0
-            alpha = if (isEnabled) 1f else 0.45f
-        }
-        aliasApprovalButton?.apply {
-            text = "용어 후보 승인 ($aliasCount)"
-            isEnabled = aliasCount > 0
-            alpha = if (isEnabled) 1f else 0.45f
         }
     }
 
