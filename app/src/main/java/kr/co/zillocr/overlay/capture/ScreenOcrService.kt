@@ -139,9 +139,12 @@ class ScreenOcrService : Service() {
         updateScreenMetrics()
 
         try {
-            mediaProjection = projectionManager.getMediaProjection(resultCode, projectionData).also {
-                it.registerCallback(projectionCallback, mainHandler)
+            val projection = projectionManager.getMediaProjection(resultCode, projectionData) ?: run {
+                stopSelf()
+                return
             }
+            projection.registerCallback(projectionCallback, mainHandler)
+            mediaProjection = projection
 
             imageReader = ImageReader.newInstance(
                 screenWidth,
@@ -152,7 +155,7 @@ class ScreenOcrService : Service() {
                 setOnImageAvailableListener({ reader -> onImageAvailable(reader) }, captureHandler)
             }
 
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
+            virtualDisplay = projection.createVirtualDisplay(
                 "ZillOcrCapture",
                 screenWidth,
                 screenHeight,
