@@ -649,7 +649,7 @@ class ScreenOcrService : Service() {
             setOnClickListener { action() }
             layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(48)).apply {
                 marginStart = dp(2)
-                marginBottom = dp(2)
+                bottomMargin = dp(2)
             }
         }
 
