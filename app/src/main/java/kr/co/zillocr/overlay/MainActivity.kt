@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha2"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha3"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -171,7 +171,13 @@ class MainActivity : ComponentActivity() {
         root.addView(TextView(this).apply {
             text = "※ API 키는 Android Keystore로 보호해 저장합니다. 같은 일본어 원문은 Room 캐시에서 재사용하며, 용어집 수정 시 관련 캐시는 자동 무효화합니다."
             textSize = 12f
-            setPadding(0, dp(6), 0, dp(16))
+            setPadding(0, dp(6), 0, dp(10))
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(TextView(this).apply {
+            text = "※ 번역창: ‘≡ 이동’을 드래그해 위치 이동, ‘↘ 크기’를 드래그해 크기 조절. 오버레이의 ‘자동’ 버튼은 OCR 영역 반대쪽으로 다시 배치합니다. A-/A+는 글자 크기, ‘투명’은 배경 투명도를 조절합니다."
+            textSize = 12f
+            setPadding(0, 0, 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
