@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0-alpha3 - 2026-08-23
+
+### Added
+
+- TranslateGemma 4B용 프롬프트 비교 벤치마크
+- 기존 RPG 번역 system prompt와 짧은 일본어→한국어 프롬프트를 동일 모델에서 비교
+- CPU 4스레드 / 6스레드 모델 로드 및 추론 비교 버튼
+- 결과 화면에 사용 스레드와 프롬프트 모드 표시
+
+### Changed
+
+- 로컬 벤치 출력 최대 길이 96 → 64 tokens
+- 모델 경로뿐 아니라 스레드 수가 바뀌면 모델을 재로딩하도록 상주 모델 상태 관리 확장
+- temperature 0 / topK 1 / seed 0 결정론적 생성 유지
+- 버전 0.4.0-alpha3 / versionCode 10
+
+### Validation target
+
+- alpha2 POCO X8 Pro Max 실측: 순수 번역 8.13~8.99초, prompt eval 4.33~5.07초, generate 3.79~3.92초, 8.42~8.71 tok/s
+- alpha3에서 짧은 프롬프트가 prompt eval을 줄이는지 확인
+- 4스레드 대비 6스레드가 실제 총 지연을 줄이는지 확인
+
 ## 0.4.0-alpha2 - 2026-08-23
 
 ### Added
@@ -23,7 +45,11 @@
 - alpha1 POCO X8 Pro Max + TranslateGemma 4B Q4_K_M 로딩/번역 성공
 - alpha1 총 시간 8.93초 / 9.49초
 - alpha1 생성 속도 8.54 tok/s / 7.60 tok/s
-- alpha2에서 순수 번역 지연 3~5회 반복 측정 예정
+- alpha2 POCO 실측: 순수 번역 8.13초 / 8.99초 / 8.77초
+- alpha2 prompt eval 4326 / 5072 / 4840 ms
+- alpha2 generate 3789 / 3913 / 3918 ms
+- alpha2 생성 속도 8.71 / 8.43 / 8.42 tok/s
+- 동일 입력 번역문 3회 일치
 
 ## 0.4.0-alpha1 - 2026-08-23
 

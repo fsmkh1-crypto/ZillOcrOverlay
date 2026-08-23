@@ -7,9 +7,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 object LocalModelTester {
+    enum class PromptMode {
+        BASELINE,
+        COMPACT
+    }
+
     data class LoadResult(
         val elapsedMs: Long,
-        val reused: Boolean
+        val reused: Boolean,
+        val threads: Int
     )
 
     data class Result(
@@ -19,73 +25,83 @@ object LocalModelTester {
         val promptEvalMs: Long,
         val generateMs: Long,
         val loadMs: Long,
-        val reusedLoadedModel: Boolean
+        val reusedLoadedModel: Boolean,
+        val threads: Int,
+        val promptMode: PromptMode
     )
 
     private val mutex = Mutex()
     private var loadedModel: LlamaModel? = null
     private var loadedPath: String = ""
+    private var loadedThreads: Int = 0
 
-    suspend fun load(modelPath: String): LoadResult = mutex.withLock {
+    suspend fun load(modelPath: String, threads: Int): LoadResult = mutex.withLock {
         require(modelPath.isNotBlank()) { "로컬 GGUF 모델을 먼저 선택하세요" }
-        if (loadedModel != null && loadedPath == modelPath) {
-            return@withLock LoadResult(elapsedMs = 0L, reused = true)
+        require(threads in 1..8) { "스레드 수가 올바르지 않습니다" }
+
+        if (loadedModel != null && loadedPath == modelPath && loadedThreads == threads) {
+            return@withLock LoadResult(elapsedMs = 0L, reused = true, threads = threads)
         }
 
         releaseLocked()
         val started = System.currentTimeMillis()
         loadedModel = Llama.loadModel(
             modelPath = modelPath,
-            config = LlamaConfig(
-                contextSize = 1024,
-                threads = 4,
-                gpuLayers = 0,
-                temperature = 0.0f,
-                topP = 1.0f,
-                topK = 1,
-                seed = 0
-            )
+            config = configFor(threads)
         )
         loadedPath = modelPath
+        loadedThreads = threads
         LoadResult(
             elapsedMs = System.currentTimeMillis() - started,
-            reused = false
+            reused = false,
+            threads = threads
         )
     }
 
-    suspend fun translate(modelPath: String, japaneseText: String): Result = mutex.withLock {
+    suspend fun translate(
+        modelPath: String,
+        japaneseText: String,
+        threads: Int,
+        promptMode: PromptMode
+    ): Result = mutex.withLock {
         require(modelPath.isNotBlank()) { "로컬 GGUF 모델을 먼저 선택하세요" }
         require(japaneseText.isNotBlank()) { "테스트할 일본어 문장을 입력하세요" }
 
         var loadMs = 0L
         var reused = true
-        if (loadedModel == null || loadedPath != modelPath) {
+        if (loadedModel == null || loadedPath != modelPath || loadedThreads != threads) {
             releaseLocked()
             val loadStarted = System.currentTimeMillis()
             loadedModel = Llama.loadModel(
                 modelPath = modelPath,
-                config = LlamaConfig(
-                    contextSize = 1024,
-                    threads = 4,
-                    gpuLayers = 0,
-                    temperature = 0.0f,
-                    topP = 1.0f,
-                    topK = 1,
-                    seed = 0
-                )
+                config = configFor(threads)
             )
             loadedPath = modelPath
+            loadedThreads = threads
             loadMs = System.currentTimeMillis() - loadStarted
             reused = false
         }
 
         val model = requireNotNull(loadedModel)
+        val prompt: String
+        val systemPrompt: String
+        when (promptMode) {
+            PromptMode.BASELINE -> {
+                prompt = japaneseText
+                systemPrompt = "Translate Japanese fantasy RPG dialogue into natural Korean. Output only the Korean translation. Do not explain."
+            }
+            PromptMode.COMPACT -> {
+                prompt = "Japanese to Korean translation. Output Korean only.\n$japaneseText"
+                systemPrompt = ""
+            }
+        }
+
         val inferenceStarted = System.currentTimeMillis()
         val completion = Llama.complete(
             model = model,
-            prompt = japaneseText,
-            systemPrompt = "Translate Japanese fantasy RPG dialogue into natural Korean. Output only the Korean translation. Do not explain.",
-            maxTokens = 96
+            prompt = prompt,
+            systemPrompt = systemPrompt,
+            maxTokens = 64
         )
         val inferenceMs = System.currentTimeMillis() - inferenceStarted
 
@@ -96,7 +112,9 @@ object LocalModelTester {
             promptEvalMs = completion.promptEvalTimeMs,
             generateMs = completion.generateTimeMs,
             loadMs = loadMs,
-            reusedLoadedModel = reused
+            reusedLoadedModel = reused,
+            threads = threads,
+            promptMode = promptMode
         )
     }
 
@@ -104,9 +122,20 @@ object LocalModelTester {
         releaseLocked()
     }
 
+    private fun configFor(threads: Int) = LlamaConfig(
+        contextSize = 1024,
+        threads = threads,
+        gpuLayers = 0,
+        temperature = 0.0f,
+        topP = 1.0f,
+        topK = 1,
+        seed = 0
+    )
+
     private fun releaseLocked() {
         loadedModel?.let { Llama.releaseModel(it) }
         loadedModel = null
         loadedPath = ""
+        loadedThreads = 0
     }
 }

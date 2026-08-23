@@ -28,6 +28,7 @@ class LocalModelActivity : ComponentActivity() {
     private lateinit var resultView: TextView
 
     private var localModelPath: String = ""
+    private var selectedThreads: Int = 4
 
     private val modelPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -52,7 +53,7 @@ class LocalModelActivity : ComponentActivity() {
                 localModelPath = copied.absolutePath
                 persistModelPath()
                 modelPathView.text = "선택됨: ${copied.name}\n${formatBytes(copied.length())}\n${copied.absolutePath}"
-                resultView.text = "모델 준비 완료. 먼저 ‘모델 메모리 로드’를 눌러 로딩 시간을 재세요."
+                resultView.text = "모델 준비 완료. 4스레드 또는 6스레드로 메모리 로드 후 비교하세요."
             } catch (e: Exception) {
                 resultView.text = "모델 복사 실패: ${e.message ?: e.javaClass.simpleName}"
             }
@@ -76,12 +77,12 @@ class LocalModelActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "로컬 번역 모델 · 0.4.0 alpha2"
+            text = "로컬 번역 모델 · 0.4.0 alpha3"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "이번 알파는 GGUF 모델을 한 번만 메모리에 올린 뒤 계속 재사용합니다. 첫 로딩 시간과 순수 번역 시간을 분리해서 측정하고, temperature=0(그리디)로 같은 문장의 결과 흔들림도 줄였습니다."
+            text = "이번 알파는 같은 TranslateGemma 4B Q4 모델로 ① 기존 프롬프트와 짧은 번역 프롬프트를 비교하고 ② CPU 4스레드/6스레드 속도를 비교합니다. 모델은 선택한 스레드 수로 한 번만 로드해 계속 재사용합니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -106,8 +107,13 @@ class LocalModelActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "모델 메모리 로드"
-            setOnClickListener { loadModelOnly() }
+            text = "4스레드로 모델 메모리 로드"
+            setOnClickListener { loadModelOnly(4) }
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(Button(this).apply {
+            text = "6스레드로 모델 메모리 로드"
+            setOnClickListener { loadModelOnly(6) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         testInput = EditText(this).apply {
@@ -118,8 +124,13 @@ class LocalModelActivity : ComponentActivity() {
         root.addView(testInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "상주 모델로 테스트 번역"
-            setOnClickListener { runLocalTest() }
+            text = "기존 프롬프트로 번역"
+            setOnClickListener { runLocalTest(LocalModelTester.PromptMode.BASELINE) }
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(Button(this).apply {
+            text = "짧은 프롬프트로 번역"
+            setOnClickListener { runLocalTest(LocalModelTester.PromptMode.COMPACT) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
@@ -137,21 +148,22 @@ class LocalModelActivity : ComponentActivity() {
         return ScrollView(this).apply { addView(root) }
     }
 
-    private fun loadModelOnly() {
+    private fun loadModelOnly(threads: Int) {
         if (localModelPath.isBlank() || !File(localModelPath).exists()) {
             Toast.makeText(this, "먼저 GGUF 모델을 선택하세요", Toast.LENGTH_SHORT).show()
             return
         }
+        selectedThreads = threads
         lifecycleScope.launch {
-            resultView.text = "모델을 메모리에 로드 중…"
+            resultView.text = "${threads}스레드 설정으로 모델을 메모리에 로드 중…"
             try {
                 val result = withContext(Dispatchers.IO) {
-                    LocalModelTester.load(localModelPath)
+                    LocalModelTester.load(localModelPath, threads)
                 }
                 resultView.text = if (result.reused) {
-                    "이미 메모리에 로드되어 있습니다.\n이제 ‘상주 모델로 테스트 번역’을 여러 번 눌러 순수 번역 시간을 비교하세요."
+                    "이미 ${threads}스레드 설정으로 로드되어 있습니다.\n이제 두 프롬프트 버튼을 각각 눌러 비교하세요."
                 } else {
-                    "모델 메모리 로드 완료\n로딩 시간: ${String.format("%.2f초", result.elapsedMs / 1000.0)}\n이제 번역 버튼은 모델을 다시 읽지 않습니다."
+                    "모델 메모리 로드 완료\nCPU 스레드: ${threads}\n로딩 시간: ${String.format("%.2f초", result.elapsedMs / 1000.0)}\n이제 번역 버튼은 모델을 다시 읽지 않습니다."
                 }
             } catch (e: OutOfMemoryError) {
                 resultView.text = "모델 로딩 중 메모리 부족(OOM). 더 작은 양자화/모델이 필요합니다."
@@ -161,7 +173,7 @@ class LocalModelActivity : ComponentActivity() {
         }
     }
 
-    private fun runLocalTest() {
+    private fun runLocalTest(promptMode: LocalModelTester.PromptMode) {
         if (localModelPath.isBlank() || !File(localModelPath).exists()) {
             Toast.makeText(this, "먼저 GGUF 모델을 선택하세요", Toast.LENGTH_SHORT).show()
             return
@@ -170,15 +182,24 @@ class LocalModelActivity : ComponentActivity() {
         if (source.isBlank()) return
 
         lifecycleScope.launch {
-            resultView.text = "번역 중…"
+            resultView.text = "${selectedThreads}스레드 · ${modeLabel(promptMode)} 번역 중…"
             try {
                 val result = withContext(Dispatchers.IO) {
-                    LocalModelTester.translate(localModelPath, source)
+                    LocalModelTester.translate(
+                        modelPath = localModelPath,
+                        japaneseText = source,
+                        threads = selectedThreads,
+                        promptMode = promptMode
+                    )
                 }
                 resultView.text = buildString {
                     append("번역 결과\n")
                     append(result.text)
-                    append("\n\n순수 번역 시간: ")
+                    append("\n\n설정: ")
+                    append(result.threads)
+                    append("스레드 · ")
+                    append(modeLabel(result.promptMode))
+                    append("\n순수 번역 시간: ")
                     append(String.format("%.2f초", result.inferenceMs / 1000.0))
                     append("\n생성 속도: ")
                     append(String.format("%.2f tok/s", result.tokensPerSecond))
@@ -189,9 +210,9 @@ class LocalModelActivity : ComponentActivity() {
                     append(result.generateMs)
                     append(" ms")
                     if (!result.reusedLoadedModel) {
-                        append("\n이번 요청에는 최초 모델 로딩 ")
+                        append("\n이번 요청에는 모델 로딩 ")
                         append(String.format("%.2f초", result.loadMs / 1000.0))
-                        append("가 포함됐습니다. 다음 요청부터는 재사용됩니다.")
+                        append("가 포함됐습니다.")
                     } else {
                         append("\n모델 재사용: 예")
                     }
@@ -202,6 +223,11 @@ class LocalModelActivity : ComponentActivity() {
                 resultView.text = "로컬 모델 오류: ${e.message ?: e.javaClass.simpleName}"
             }
         }
+    }
+
+    private fun modeLabel(mode: LocalModelTester.PromptMode): String = when (mode) {
+        LocalModelTester.PromptMode.BASELINE -> "기존 프롬프트"
+        LocalModelTester.PromptMode.COMPACT -> "짧은 프롬프트"
     }
 
     private fun persistModelPath() {
