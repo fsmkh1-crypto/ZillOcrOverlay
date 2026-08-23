@@ -89,19 +89,12 @@ object LocalModelTester {
         val systemPrompt: String
         when (promptMode) {
             PromptMode.BASELINE -> {
-                prompt = if (disableThinking) {
-                    "$japaneseText\n/no_think"
-                } else {
-                    japaneseText
-                }
-                systemPrompt = "Translate Japanese fantasy RPG dialogue into natural Korean. Output only the Korean translation. Do not explain."
+                prompt = if (disableThinking) "$japaneseText\n/no_think" else japaneseText
+                systemPrompt = "Translate Japanese fantasy RPG dialogue into natural Korean. Preserve the original politeness level, roughness, character voice, social register, and archaic tone. Output only Korean. Do not explain."
             }
             PromptMode.COMPACT -> {
-                prompt = if (disableThinking) {
-                    "Japanese to Korean translation. Output Korean only.\n$japaneseText\n/no_think"
-                } else {
-                    "Japanese to Korean translation. Output Korean only.\n$japaneseText"
-                }
+                val core = "Translate Japanese RPG dialogue to Korean. Preserve politeness, casual/rough speech, character voice and archaic tone. Korean only.\n$japaneseText"
+                prompt = if (disableThinking) "$core\n/no_think" else core
                 systemPrompt = ""
             }
         }
@@ -116,7 +109,7 @@ object LocalModelTester {
         val inferenceMs = System.currentTimeMillis() - inferenceStarted
 
         Result(
-            text = completion.text.trim(),
+            text = cleanOutput(completion.text),
             tokensPerSecond = completion.tokensPerSecond.toDouble(),
             inferenceMs = inferenceMs,
             promptEvalMs = completion.promptEvalTimeMs,
@@ -129,9 +122,7 @@ object LocalModelTester {
         )
     }
 
-    suspend fun release() = mutex.withLock {
-        releaseLocked()
-    }
+    suspend fun release() = mutex.withLock { releaseLocked() }
 
     private fun configFor(threads: Int) = LlamaConfig(
         contextSize = 1024,
@@ -142,6 +133,14 @@ object LocalModelTester {
         topK = 1,
         seed = 0
     )
+
+    private fun cleanOutput(raw: String): String {
+        return raw
+            .replace(Regex("(?s)<think>.*?</think>"), "")
+            .replace("<think>", "")
+            .replace("</think>", "")
+            .trim()
+    }
 
     private fun releaseLocked() {
         loadedModel?.let { Llama.releaseModel(it) }
