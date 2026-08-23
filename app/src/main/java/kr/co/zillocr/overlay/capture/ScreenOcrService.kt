@@ -44,6 +44,7 @@ import kr.co.zillocr.overlay.data.RegionStore
 import kr.co.zillocr.overlay.data.TranslationSettingsStore
 import kr.co.zillocr.overlay.overlay.RegionSelectionView
 import kr.co.zillocr.overlay.translation.OpenAiTranslationProvider
+import kr.co.zillocr.overlay.translation.TranslationCancelledException
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +82,8 @@ class ScreenOcrService : Service() {
     private val translationLock = Any()
     private var translationRunning = false
     private var pendingTranslation: TranslationRequest? = null
+    @Volatile private var currentProvider: OpenAiTranslationProvider? = null
+    @Volatile private var lastTranslationRequest: TranslationRequest? = null
 
     private var resultContainer: LinearLayout? = null
     private var resultView: TextView? = null
@@ -95,7 +98,8 @@ class ScreenOcrService : Service() {
         val text: String,
         val context: List<String>,
         val apiKey: String,
-        val model: String
+        val model: String,
+        val force: Boolean = false
     )
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -137,6 +141,8 @@ class ScreenOcrService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        currentProvider?.cancelInFlight()
+        currentProvider = null
         removeAllOverlays()
         releaseProjectionResources(stopProjection = true)
         OpenAiTranslationProvider.clearDialogueContext()
@@ -336,19 +342,22 @@ class ScreenOcrService : Service() {
             return
         }
 
-        enqueueTranslation(
-            TranslationRequest(
-                text = text,
-                context = previousContext,
-                apiKey = settings.apiKey,
-                model = settings.model
-            )
+        val request = TranslationRequest(
+            text = text,
+            context = previousContext,
+            apiKey = settings.apiKey,
+            model = settings.model
         )
+        lastTranslationRequest = request
+        enqueueTranslation(request)
     }
 
     private fun enqueueTranslation(request: TranslationRequest) {
         var shouldStart = false
         synchronized(translationLock) {
+            if (translationRunning) {
+                currentProvider?.cancelInFlight()
+            }
             pendingTranslation = request
             if (!translationRunning) {
                 translationRunning = true
@@ -367,17 +376,29 @@ class ScreenOcrService : Service() {
                 next
             } ?: return
 
+            val provider = OpenAiTranslationProvider(
+                apiKey = request.apiKey,
+                model = request.model
+            )
+            currentProvider = provider
+
             try {
-                val translated = OpenAiTranslationProvider(
-                    apiKey = request.apiKey,
-                    model = request.model
-                ).translate(
-                    japaneseText = request.text,
-                    previousContext = request.context
-                )
+                val translated = if (request.force) {
+                    provider.translateForced(
+                        japaneseText = request.text,
+                        previousContext = request.context
+                    )
+                } else {
+                    provider.translate(
+                        japaneseText = request.text,
+                        previousContext = request.context
+                    )
+                }
                 mainHandler.post {
                     if (lastRecognizedText == request.text) showResultOverlay(translated)
                 }
+            } catch (_: TranslationCancelledException) {
+                // 새 안정화 대사로 교체된 정상적인 취소이므로 화면에 오류를 표시하지 않는다.
             } catch (error: Exception) {
                 mainHandler.post {
                     if (lastRecognizedText == request.text) {
@@ -388,8 +409,18 @@ class ScreenOcrService : Service() {
                         )
                     }
                 }
+            } finally {
+                if (currentProvider === provider) currentProvider = null
             }
         }
+    }
+
+    private fun retryLastTranslation() {
+        val previous = lastTranslationRequest ?: return
+        val forced = previous.copy(force = true)
+        lastTranslationRequest = forced
+        showResultOverlay("다시 번역 중…")
+        enqueueTranslation(forced)
     }
 
     private fun cropImage(image: Image, normalizedRegion: RectF): Bitmap? {
@@ -465,6 +496,7 @@ class ScreenOcrService : Service() {
         controls.addView(compactButton("A−", 36) { changeOverlayTextSize(-1f) })
         controls.addView(compactButton("A+", 36) { changeOverlayTextSize(1f) })
         controls.addView(compactButton("투", 34) { cycleOverlayAlpha() })
+        controls.addView(compactButton("재", 34) { retryLastTranslation() })
         controls.addView(compactButton("숨", 34) { toggleResultVisibility() })
         controls.addView(compactButton("■", 34) { stopSelf() })
 
@@ -704,7 +736,11 @@ class ScreenOcrService : Service() {
                 RegionStore.save(this, selected)
                 resetOcrStabilityState()
                 synchronized(recentJapanese) { recentJapanese.clear() }
-                synchronized(translationLock) { pendingTranslation = null }
+                synchronized(translationLock) {
+                    pendingTranslation = null
+                    currentProvider?.cancelInFlight()
+                }
+                lastTranslationRequest = null
                 OpenAiTranslationProvider.clearDialogueContext()
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")

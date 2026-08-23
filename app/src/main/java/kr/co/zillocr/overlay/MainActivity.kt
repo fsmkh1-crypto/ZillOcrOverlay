@@ -112,12 +112,12 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha6"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha7"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "OCR → 화자/문맥 → 모델별 캐시/용어집 → OpenAI → 오버레이"
+            text = "OCR → 화자 사전/문맥 → 모델별 캐시/용어집 → OpenAI → 오버레이"
             textSize = 15f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -195,13 +195,19 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ 화자명은 용어집에 등록된 카타카나 이름을 기준으로 인식하며, 괄호·따옴표·콜론 같은 장식 문자를 제거해 비교합니다. 같은 대화가 이어질 때는 확인된 화자를 최대 90초간 문맥으로 유지합니다. 긴 번역이 96토큰에서 잘린 경우에만 160토큰으로 1회 재시도합니다."
+            text = "※ 화자명은 번역문 맨 윗줄에 앱이 직접 표시합니다. 기존 용어집 이름은 실제 화자 위치에서 확인되면 별도 화자 사전으로 승격하고, 미등록 이름 후보는 같은 번역 요청 안에서 한국어 표기를 얻어 화자 사전에 저장합니다. sticky 화자는 최대 90초·연속 3대사까지만 유지해 나레이션 오염을 줄입니다."
             textSize = 12f
             setPadding(0, 0, 0, dp(10))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ 번역창: ‘≡ 이동’과 ‘↘ 크기’로 위치/크기를 조절합니다. 우측 제어창은 ☰ 하나만 기본 표시되고 누르면 영역/A-/A+/투명/중지 버튼이 작게 펼쳐집니다. ‘투’는 100/75/50/25/10/0% 순으로 배경만 조절하며 0%에서도 글자는 보입니다."
+            text = "※ 새 대사가 2회 안정화까지 통과하면 진행 중이던 이전 번역 요청은 취소하고 최신 대사를 우선합니다. ☰ 메뉴의 ‘재’는 현재 대사를 캐시 무시하고 다시 번역하며, ‘숨’은 번역창만 숨깁니다."
+            textSize = 12f
+            setPadding(0, 0, 0, dp(10))
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(TextView(this).apply {
+            text = "※ 번역창: ‘≡ 이동’과 ‘↘ 크기’로 위치/크기를 조절합니다. 우측 제어창은 ☰ 하나만 기본 표시되고 누르면 영역/A-/A+/투/재/숨/종료가 작게 펼쳐집니다. ‘투’는 100/75/50/25/10/0% 순으로 배경만 조절하며 0%에서도 글자는 보입니다."
             textSize = 12f
             setPadding(0, 0, 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -219,7 +225,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: OpenAI 키 입력·모델 선택·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ☰ → 영역 → 대화창(가능하면 화자명 포함) 드래그"
+            text = "사용: OpenAI 키 입력·모델 선택·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ☰ → 영역 → 화자명까지 포함해 대화창 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -232,7 +238,7 @@ class MainActivity : ComponentActivity() {
             val dao = database.glossaryDao()
             if (dao.count() == 0) {
                 val now = System.currentTimeMillis()
-                dao.upsert(GlossaryEntity("ロストール", "로스토르", now))
+                dao.upsert(GlossaryEntity("ロストール", "로스톨", now))
                 dao.upsert(GlossaryEntity("ソウル", "소울", now))
                 dao.upsert(GlossaryEntity("インフィニティア", "인피니티아", now))
             }
@@ -268,7 +274,7 @@ class MainActivity : ComponentActivity() {
     private fun confirmClearCache() {
         AlertDialog.Builder(this)
             .setTitle("번역 캐시 삭제")
-            .setMessage("저장된 번역 기록을 모두 삭제할까요? 용어집은 유지됩니다.")
+            .setMessage("저장된 번역 기록을 모두 삭제할까요? 용어집과 화자 사전은 유지됩니다.")
             .setPositiveButton("삭제") { _, _ ->
                 dbExecutor.execute {
                     database.translationDao().clear()
