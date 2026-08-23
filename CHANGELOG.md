@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0-alpha2 - 2026-08-23
+
+### Added
+
+- GGUF 모델 상주형 벤치 구조
+- `모델 메모리 로드` 버튼 및 최초 로딩 시간 측정
+- 상주 모델 재사용 번역
+- 순수 번역 시간 / prompt eval / generation / tok/s 표시
+
+### Changed
+
+- TranslateGemma 테스트 출력 최대 96 tokens
+- context 1024 / threads 4 유지
+- temperature 0.0, topK 1, seed 0으로 deterministic greedy 번역
+- 동일 모델 경로는 재로딩하지 않도록 변경
+- native 모델 접근을 `Mutex`로 직렬화
+- 버전 0.4.0-alpha2 / versionCode 9
+
+### Validation
+
+- alpha1 POCO X8 Pro Max + TranslateGemma 4B Q4_K_M 로딩/번역 성공
+- alpha1 총 시간 8.93초 / 9.49초
+- alpha1 생성 속도 8.54 tok/s / 7.60 tok/s
+- alpha2에서 순수 번역 지연 3~5회 반복 측정 예정
+
 ## 0.4.0-alpha1 - 2026-08-23
 
 ### Added
@@ -24,8 +49,8 @@
 
 - llama.cpp/ggml Android arm64 네이티브 라이브러리 패키징 확인
 - 최초 CI에서 `tokensPerSecond` Float/Double 타입 불일치 발견 후 수정
-- 최종 `assembleDebug` 재검증 진행
-- TranslateGemma 4B Q4_K_M POCO 실기기 벤치마크 예정
+- GitHub Actions `assembleDebug` 성공
+- TranslateGemma 4B Q4_K_M POCO 실기기 번역 성공
 
 ## 0.3.1 - 2026-08-23
 
