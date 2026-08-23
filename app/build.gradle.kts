@@ -13,8 +13,8 @@ android {
         applicationId = "kr.co.zillocr.overlay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -40,8 +40,7 @@ kotlin {
 }
 
 dependencies {
-    // Keep Stage 1 on compileSdk 36 / AGP 8.13.2. Core 1.18+ moved to API 36.1,
-    // and Core 1.19 requires API 37 / AGP 9.1+.
+    // Keep current prototype on compileSdk 36 / AGP 8.13.2.
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.12.4")
 

@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -39,10 +38,13 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import kr.co.zillocr.overlay.MainActivity
 import kr.co.zillocr.overlay.R
 import kr.co.zillocr.overlay.data.RegionStore
+import kr.co.zillocr.overlay.data.TranslationSettingsStore
 import kr.co.zillocr.overlay.overlay.RegionSelectionView
+import kr.co.zillocr.overlay.translation.OpenAiTranslationProvider
+import java.util.ArrayDeque
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
-import kotlin.math.min
 
 class ScreenOcrService : Service() {
 
@@ -65,13 +67,26 @@ class ScreenOcrService : Service() {
     private var ocrRegion: RectF? = null
     private var selectingRegion = false
     private var lastOcrAt = 0L
-    private var lastRecognizedText = ""
+    @Volatile private var lastRecognizedText = ""
     private val ocrInFlight = AtomicBoolean(false)
+
+    private val recentJapanese = ArrayDeque<String>()
+    private val translationExecutor = Executors.newSingleThreadExecutor()
+    private val translationLock = Any()
+    private var translationRunning = false
+    private var pendingTranslation: TranslationRequest? = null
 
     private var resultView: TextView? = null
     private var resultParams: WindowManager.LayoutParams? = null
     private var controlView: View? = null
     private var selectorView: RegionSelectionView? = null
+
+    private data class TranslationRequest(
+        val text: String,
+        val context: List<String>,
+        val apiKey: String,
+        val model: String
+    )
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -116,6 +131,7 @@ class ScreenOcrService : Service() {
         releaseProjectionResources(stopProjection = true)
         recognizer.close()
         captureThread.quitSafely()
+        translationExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -168,7 +184,7 @@ class ScreenOcrService : Service() {
 
             mainHandler.post {
                 showControlOverlay()
-                showResultOverlay("OCR 준비됨 · PPSSPP에서 ‘영역’을 눌러 지정하세요")
+                showResultOverlay("준비됨 · PPSSPP에서 ‘영역’을 눌러 일본어 대화창을 지정하세요")
                 positionResultOutsideRegion()
             }
         } catch (_: SecurityException) {
@@ -215,10 +231,7 @@ class ScreenOcrService : Service() {
                     val normalized = normalizeText(result.text)
                     if (normalized.isNotBlank() && normalized != lastRecognizedText) {
                         lastRecognizedText = normalized
-                        mainHandler.post {
-                            showResultOverlay(normalized)
-                            positionResultOutsideRegion()
-                        }
+                        handleRecognizedText(normalized)
                     }
                 }
                 .addOnFailureListener { error ->
@@ -232,6 +245,100 @@ class ScreenOcrService : Service() {
                 }
         } finally {
             image.close()
+        }
+    }
+
+    private fun handleRecognizedText(text: String) {
+        val previousContext = synchronized(recentJapanese) {
+            recentJapanese.toList().takeLast(2)
+        }
+
+        synchronized(recentJapanese) {
+            if (recentJapanese.lastOrNull() != text) {
+                recentJapanese.addLast(text)
+                while (recentJapanese.size > 3) recentJapanese.removeFirst()
+            }
+        }
+
+        val settings = TranslationSettingsStore.load(this)
+        if (!settings.enabled) {
+            mainHandler.post {
+                showResultOverlay(text)
+                positionResultOutsideRegion()
+            }
+            return
+        }
+
+        if (settings.apiKey.isBlank()) {
+            mainHandler.post {
+                showResultOverlay("API 키를 앱에서 먼저 입력하세요\n\n$text")
+                positionResultOutsideRegion()
+            }
+            return
+        }
+
+        enqueueTranslation(
+            TranslationRequest(
+                text = text,
+                context = previousContext,
+                apiKey = settings.apiKey,
+                model = settings.model
+            )
+        )
+    }
+
+    private fun enqueueTranslation(request: TranslationRequest) {
+        var shouldStart = false
+        synchronized(translationLock) {
+            pendingTranslation = request
+            if (!translationRunning) {
+                translationRunning = true
+                shouldStart = true
+            }
+        }
+        if (shouldStart) {
+            translationExecutor.execute { drainTranslationQueue() }
+        }
+    }
+
+    private fun drainTranslationQueue() {
+        while (!Thread.currentThread().isInterrupted) {
+            val request = synchronized(translationLock) {
+                val next = pendingTranslation
+                pendingTranslation = null
+                if (next == null) {
+                    translationRunning = false
+                }
+                next
+            } ?: return
+
+            try {
+                val translated = OpenAiTranslationProvider(
+                    apiKey = request.apiKey,
+                    model = request.model
+                ).translate(
+                    japaneseText = request.text,
+                    previousContext = request.context
+                )
+
+                mainHandler.post {
+                    if (lastRecognizedText == request.text) {
+                        showResultOverlay(translated)
+                        positionResultOutsideRegion()
+                    }
+                }
+            } catch (error: Exception) {
+                mainHandler.post {
+                    if (lastRecognizedText == request.text) {
+                        val detail = error.message?.take(120).orEmpty()
+                        showResultOverlay(
+                            if (detail.isBlank()) "번역 오류: ${error.javaClass.simpleName}"
+                            else "번역 오류: $detail"
+                        )
+                        positionResultOutsideRegion()
+                    }
+                }
+            }
         }
     }
 
@@ -301,12 +408,13 @@ class ScreenOcrService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = dp(8)
-            y = dp(80)
+            y = dp(70)
         }
 
         windowManager.addView(container, params)
@@ -321,23 +429,24 @@ class ScreenOcrService : Service() {
             val view = TextView(this).apply {
                 setTextColor(Color.WHITE)
                 setBackgroundColor(0xC9000000.toInt())
-                textSize = 18f
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                textSize = 19f
+                setPadding(dp(14), dp(10), dp(14), dp(10))
                 maxLines = 6
             }
 
             val params = WindowManager.LayoutParams(
-                (screenWidth * 0.82f).toInt(),
+                (screenWidth * 0.74f).toInt(),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_SECURE,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = dp(12)
-                y = dp(120)
+                x = dp(14)
+                y = dp(18)
             }
 
             windowManager.addView(view, params)
@@ -352,17 +461,18 @@ class ScreenOcrService : Service() {
         val params = resultParams ?: return
         val view = resultView ?: return
 
-        val margin = (12 * resources.displayMetrics.density).toInt()
-        val estimatedHeight = max(view.height, (140 * resources.displayMetrics.density).toInt())
-        val regionTop = (region.top * screenHeight).toInt()
+        val density = resources.displayMetrics.density
+        val margin = (14 * density).toInt()
+        val maxExpectedHeight = max(view.height, (170 * density).toInt())
         val regionBottom = (region.bottom * screenHeight).toInt()
 
-        params.y = if (regionTop > estimatedHeight + margin * 2) {
-            max(margin, regionTop - estimatedHeight - margin)
-        } else {
-            min(screenHeight - estimatedHeight - margin, regionBottom + margin)
-        }
         params.x = margin
+        params.y = if (region.top >= 0.35f) {
+            margin
+        } else {
+            (regionBottom + margin).coerceAtMost(screenHeight - maxExpectedHeight - margin)
+                .coerceAtLeast(margin)
+        }
         windowManager.updateViewLayout(view, params)
     }
 
@@ -376,6 +486,8 @@ class ScreenOcrService : Service() {
                 ocrRegion = selected
                 RegionStore.save(this, selected)
                 lastRecognizedText = ""
+                synchronized(recentJapanese) { recentJapanese.clear() }
+                synchronized(translationLock) { pendingTranslation = null }
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")
                 positionResultOutsideRegion()
@@ -390,7 +502,8 @@ class ScreenOcrService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -440,7 +553,7 @@ class ScreenOcrService : Service() {
             notificationManager.createNotificationChannel(
                 NotificationChannel(
                     NOTIFICATION_CHANNEL_ID,
-                    "화면 OCR 캡처",
+                    "화면 OCR/번역",
                     NotificationManager.IMPORTANCE_LOW
                 )
             )
@@ -461,8 +574,8 @@ class ScreenOcrService : Service() {
 
         val notification = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_ocr)
-            .setContentTitle("질올 OCR 실행 중")
-            .setContentText("PPSSPP 화면의 지정 영역을 OCR합니다")
+            .setContentTitle("질올 실시간 번역 실행 중")
+            .setContentText("PPSSPP 지정 영역을 OCR하고 번역합니다")
             .setContentIntent(openAppIntent)
             .setOngoing(true)
             .addAction(
