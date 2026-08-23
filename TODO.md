@@ -19,15 +19,13 @@
 - [x] debug APK artifact 생성 확인
 - [x] POCO X8 Pro Max 실기기 설치 확인
 - [x] PPSSPP 실제 Zill O’ll 일본어 OCR 동작 확인
-- [ ] 0.2.3 HyperOS 전체 화면 캡처 시작 실기기 확인
 - [ ] 가로/세로 및 PPSSPP 화면 회전 테스트
 - [ ] OCR 영역 크기별 평균 지연 측정
 
 ## 2단계 · API 번역 + 오버레이
 
 - [x] TranslationProvider 인터페이스
-- [x] OpenAI Responses API 프로토타입
-- [x] OpenRouter Chat Completions API 전환
+- [x] OpenRouter Chat Completions API
 - [x] 기본 모델 `openrouter/free`
 - [x] 앱 내 API 키/모델 설정 UI
 - [x] OCR → 번역 API 파이프라인
@@ -35,25 +33,29 @@
 - [x] 번역 요청 전용 백그라운드 스레드
 - [x] 번역 중 새 OCR 발생 시 최신 요청만 대기
 - [x] 번역 자막을 OCR ROI 바깥에 배치
-- [x] 오버레이 `FLAG_SECURE` 적용으로 자기 캡처 억제
+- [x] 오버레이 `FLAG_SECURE` 적용
 - [x] OpenRouter 무료 번역 POCO 실기기 동작 확인
 - [x] OpenRouter null/빈 응답 1회 재시도
 - [x] 동일 자막/동일 위치 불필요한 View 갱신 억제
-- [ ] 0.2.3 자막 깜빡임 재검증
 - [ ] 평균 API 번역 지연 측정
-- [ ] HyperOS에서 `FLAG_SECURE` 재캡처 억제 확인
 - [ ] 일본어 원문 표시 ON/OFF
-- [x] 번역만 표시 기본 모드
 - [ ] API 키 Android Keystore 암호화 저장
 
 ## 3단계 · 중복 감지 + 캐시 + 용어집
 
 - [x] 실행 중 메모리 LRU 캐시(최대 256개)
 - [x] OCR 유사 문장 판별 1차 적용
-- [ ] Room 도입
-- [ ] 정규화/해시 기반 영구 문장 캐시
-- [ ] 번역 기록
-- [ ] 용어집 CRUD
+- [x] Room 2.8.4 도입
+- [x] 원문 기준 영구 번역 캐시
+- [x] 최초 생성일 / 마지막 사용일 / 사용 횟수 / 모델 저장
+- [x] 최근 번역 기록 조회
+- [x] 전체 캐시 삭제
+- [x] 용어집 추가/수정/삭제
+- [x] 현재 대사에 관련된 용어만 프롬프트에 전달
+- [x] 용어 수정/삭제 시 관련 캐시 선택 무효화
+- [x] 기본 용어 3개 자동 시드
+- [ ] POCO 실기기 영구 캐시 재사용 확인
+- [ ] 실제 플레이 1시간 캐시 적중률 측정
 
 ## 4단계 · 로컬 LLM
 

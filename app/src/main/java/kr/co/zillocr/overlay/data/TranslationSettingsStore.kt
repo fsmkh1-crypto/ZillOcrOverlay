@@ -17,6 +17,7 @@ object TranslationSettingsStore {
     )
 
     fun load(context: Context): Settings {
+        AppContextHolder.init(context)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return Settings(
             enabled = prefs.getBoolean(KEY_ENABLED, true),
@@ -29,6 +30,7 @@ object TranslationSettingsStore {
     }
 
     fun save(context: Context, enabled: Boolean, apiKey: String, model: String) {
+        AppContextHolder.init(context)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_ENABLED, enabled)
