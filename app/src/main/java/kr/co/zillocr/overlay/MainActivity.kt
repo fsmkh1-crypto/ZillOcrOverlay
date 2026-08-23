@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha1"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha2"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -145,8 +145,10 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "용어집 관리"
-            setOnClickListener { showGlossaryManager() }
+            text = "용어집 관리 / 일괄 가져오기"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, GlossaryManagerActivity::class.java))
+            }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
@@ -185,7 +187,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: 새 OpenAI 키 입력·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
+            text = "사용: OpenAI 키 입력·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -203,75 +205,6 @@ class MainActivity : ComponentActivity() {
                 dao.upsert(GlossaryEntity("インフィニティア", "인피니티아", now))
             }
         }
-    }
-
-    private fun showGlossaryManager() {
-        dbExecutor.execute {
-            val entries = database.glossaryDao().all()
-            val body = if (entries.isEmpty()) "등록된 용어가 없습니다."
-            else entries.joinToString("\n") { "${it.sourceTerm} → ${it.targetTerm}" }
-            runOnUiThread {
-                AlertDialog.Builder(this)
-                    .setTitle("용어집 · ${entries.size}개")
-                    .setMessage(body)
-                    .setPositiveButton("추가/수정") { _, _ -> showGlossaryEditDialog() }
-                    .setNeutralButton("삭제") { _, _ -> showGlossaryDeleteDialog() }
-                    .setNegativeButton("닫기", null)
-                    .show()
-            }
-        }
-    }
-
-    private fun showGlossaryEditDialog() {
-        val density = resources.displayMetrics.density
-        fun dp(value: Int) = (value * density).toInt()
-        val source = EditText(this).apply { hint = "일본어 원문 (예: ロストール)" }
-        val target = EditText(this).apply { hint = "한국어 표기 (예: 로스토르)" }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), 0, dp(18), 0)
-            addView(source)
-            addView(target)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("용어 추가 / 수정")
-            .setView(box)
-            .setPositiveButton("저장") { _, _ ->
-                val sourceText = source.text.toString().trim()
-                val targetText = target.text.toString().trim()
-                if (sourceText.isBlank() || targetText.isBlank()) {
-                    Toast.makeText(this, "원문과 번역어를 모두 입력하세요", Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
-                dbExecutor.execute {
-                    database.glossaryDao().upsert(GlossaryEntity(sourceText, targetText, System.currentTimeMillis()))
-                    database.translationDao().invalidateContaining(sourceText)
-                    OpenAiTranslationProvider.clearMemoryCache()
-                    runOnUiThread { Toast.makeText(this, "용어를 저장했습니다", Toast.LENGTH_SHORT).show() }
-                }
-            }
-            .setNegativeButton("취소", null)
-            .show()
-    }
-
-    private fun showGlossaryDeleteDialog() {
-        val source = EditText(this).apply { hint = "삭제할 일본어 원문" }
-        AlertDialog.Builder(this)
-            .setTitle("용어 삭제")
-            .setView(source)
-            .setPositiveButton("삭제") { _, _ ->
-                val sourceText = source.text.toString().trim()
-                if (sourceText.isBlank()) return@setPositiveButton
-                dbExecutor.execute {
-                    database.glossaryDao().delete(sourceText)
-                    database.translationDao().invalidateContaining(sourceText)
-                    OpenAiTranslationProvider.clearMemoryCache()
-                    runOnUiThread { Toast.makeText(this, "용어를 삭제했습니다", Toast.LENGTH_SHORT).show() }
-                }
-            }
-            .setNegativeButton("취소", null)
-            .show()
     }
 
     private fun showTranslationHistory() {
