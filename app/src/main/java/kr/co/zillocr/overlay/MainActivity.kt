@@ -91,12 +91,12 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 2단계"
+            text = "질올 실시간 번역 오버레이 · 0.2.1"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "PPSSPP의 지정 영역을 일본어 OCR한 뒤 한국어로 번역해 화면 위에 표시합니다."
+            text = "PPSSPP의 일본어를 OCR한 뒤 OpenRouter 무료 모델로 한국어 번역합니다."
             textSize = 15f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -108,7 +108,7 @@ class MainActivity : ComponentActivity() {
         root.addView(translationEnabledCheck, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         apiKeyInput = EditText(this).apply {
-            hint = "OpenAI API 키 (sk-...)"
+            hint = "OpenRouter API 키 (sk-or-v1-...)"
             setText(saved.apiKey)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             maxLines = 1
@@ -116,7 +116,7 @@ class MainActivity : ComponentActivity() {
         root.addView(apiKeyInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         modelInput = EditText(this).apply {
-            hint = "모델"
+            hint = "모델 (기본: openrouter/free)"
             setText(saved.model)
             inputType = InputType.TYPE_CLASS_TEXT
             maxLines = 1
@@ -129,14 +129,14 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "OpenAI API 키 발급 페이지"
+            text = "OpenRouter API 키 발급 페이지"
             setOnClickListener {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://platform.openai.com/api-keys")))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://openrouter.ai/settings/keys")))
             }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ ChatGPT 구독과 OpenAI API 요금은 별도입니다. 현재 키는 앱 전용 저장공간에 보관하는 프로토타입 방식이며, 후속 버전에서 Android Keystore 적용 예정입니다."
+            text = "※ 기본 모델은 openrouter/free입니다. 무료 계정은 호출 제한이 있으므로 같은 일본어 문장은 실행 중 메모리 캐시에서 재사용합니다. API 키는 앱 전용 저장공간에 보관합니다."
             textSize = 12f
             setPadding(0, dp(6), 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -154,7 +154,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: 시작 → 화면 캡처 허용 → PPSSPP 전환 → ‘영역’ → 일본어 대화창 드래그"
+            text = "사용: OpenRouter 키 입력·저장 → 시작 → 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
