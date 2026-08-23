@@ -16,20 +16,29 @@
 - [x] OCR 일본어 결과 오버레이 표시
 - [x] GitHub Actions `assembleDebug` 성공 확인
 - [x] debug APK artifact 생성 확인
-- [ ] POCO X8 Pro Max 실기기 설치 확인
-- [ ] PPSSPP 실제 화면에서 OCR 정확도 측정
+- [x] POCO X8 Pro Max 실기기 설치 확인
+- [x] PPSSPP 실제 Zill O’ll 일본어 OCR 동작 확인
 - [ ] 가로/세로 및 PPSSPP 화면 회전 테스트
-- [ ] 결과 오버레이가 캡처 입력에 재인식되는지 확인
 - [ ] OCR 영역 크기별 평균 지연 측정
 
 ## 2단계 · API 번역 + 오버레이
 
-- [ ] TranslationProvider 인터페이스
-- [ ] API 키 안전 저장 방식 결정
-- [ ] OCR → 번역 API 파이프라인
+- [x] TranslationProvider 인터페이스
+- [x] OpenAI Responses API 구현
+- [x] 앱 내 API 키/모델 설정 UI
+- [x] OCR → 번역 API 파이프라인
+- [x] 직전 일본어 대사 최대 2개 문맥 전달
+- [x] 번역 요청 전용 백그라운드 스레드
+- [x] 번역 중 새 OCR 발생 시 최신 요청만 대기
+- [x] 번역 자막을 OCR ROI 바깥에 배치
+- [x] 오버레이 `FLAG_SECURE` 적용으로 자기 캡처 억제
+- [ ] 0.2.0 POCO 실기기 번역 성공 확인
+- [ ] 평균 API 번역 지연 측정
+- [ ] HyperOS에서 `FLAG_SECURE` 재캡처 억제 확인
 - [ ] 일본어 원문 표시 ON/OFF
-- [ ] 번역만 표시 모드
-- [ ] 네트워크 오류/재시도 정책
+- [x] 번역만 표시 기본 모드
+- [ ] 네트워크 재시도 정책
+- [ ] API 키 Android Keystore 암호화 저장
 
 ## 3단계 · 중복 감지 + 캐시 + 용어집
 
