@@ -33,14 +33,25 @@ class LocalModelActivity : ComponentActivity() {
         QWEN_Q4("Qwen3 1.7B Q4_K_M", "qwen3-1.7b-q4.gguf", disableThinking = true)
     }
 
+    private data class ToneCase(val label: String, val japanese: String)
+
+    private val toneCases = listOf(
+        ToneCase("정중한 감사", "ありがとうございます。あなたのおかげで助かりました。"),
+        ToneCase("정중한 명령/부탁", "恐れ入りますが、こちらで少々お待ちください。"),
+        ToneCase("친한 반말", "お前、こんなところで何してるんだ？"),
+        ToneCase("거친 적대어", "貴様……よくも俺の仲間を！ 絶対に許さんぞ！"),
+        ToneCase("소년풍", "へへっ、そんなの楽勝だって！ 俺に任せとけよ。"),
+        ToneCase("차분한 여성어", "そうね。無理をする必要はないわ。今日は休みましょう。"),
+        ToneCase("고풍스러운 말투", "そなたの覚悟、しかと見届けた。ならば我も力を貸そう。"),
+        ToneCase("상하관계 존대", "陛下、ご命令とあらば、この命に代えても成し遂げてみせます。")
+    )
+
     private lateinit var testInput: EditText
     private lateinit var resultView: TextView
     private val slotViews = mutableMapOf<ModelSlot, TextView>()
     private var pendingImportSlot: ModelSlot? = null
 
-    private val modelPicker = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
+    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val slot = pendingImportSlot
         pendingImportSlot = null
         if (uri == null || slot == null) return@registerForActivityResult
@@ -84,12 +95,12 @@ class LocalModelActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "로컬 번역 모델 · 0.4.0 alpha4.1"
+            text = "로컬 번역 모델 · 0.4.0 alpha4.2"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "4개 모델을 같은 조건으로 비교합니다. 6 CPU 스레드 · 짧은 프롬프트 · 최대 64 tokens를 사용하며, Qwen3만 /no_think를 강제로 넣어 생각 모드를 끕니다. 각 벤치는 모델을 한 번 로드한 뒤 같은 문장을 3회 번역해 평균을 냅니다."
+            text = "실사용 후보의 속도뿐 아니라 말투 보존을 확인합니다. 번역 프롬프트는 존댓말/반말, 거친 말투, 캐릭터성, 사회적 위계, 고풍스러운 어조를 원문대로 유지하도록 강화했습니다. Qwen3는 /no_think를 사용하고 <think> 태그는 결과에서 자동 제거합니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -114,13 +125,16 @@ class LocalModelActivity : ComponentActivity() {
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
             root.addView(Button(this).apply {
-                text = if (slot.disableThinking) {
-                    "${slot.label} 3회 벤치 (/no_think)"
-                } else {
-                    "${slot.label} 3회 벤치"
-                }
+                text = if (slot.disableThinking) "${slot.label} 3회 벤치 (/no_think)" else "${slot.label} 3회 벤치"
                 setOnClickListener { runBenchmark(slot) }
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+            if (slot == ModelSlot.EXAONE_Q4 || slot == ModelSlot.QWEN_Q4) {
+                root.addView(Button(this).apply {
+                    text = "${slot.label} 말투 8종 테스트"
+                    setOnClickListener { runToneBenchmark(slot) }
+                }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
         }
 
         testInput = EditText(this).apply {
@@ -132,7 +146,7 @@ class LocalModelActivity : ComponentActivity() {
         root.addView(testInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         resultView = TextView(this).apply {
-            text = "Qwen3 수정 확인은 Qwen3 3회 벤치만 다시 실행하면 됩니다."
+            text = "Qwen과 EXAONE의 ‘말투 8종 테스트’를 각각 실행해 번역체 차이를 비교하세요."
             textSize = 15f
             setPadding(0, dp(18), 0, 0)
         }
@@ -151,8 +165,7 @@ class LocalModelActivity : ComponentActivity() {
         if (source.isBlank()) return
 
         lifecycleScope.launch {
-            resultView.text = "${slot.label}\n모델 로드 후 3회 벤치 중…" +
-                if (slot.disableThinking) "\nQwen3 /no_think 적용 중" else ""
+            resultView.text = "${slot.label}\n모델 로드 후 3회 벤치 중…"
             try {
                 val benchmark = withContext(Dispatchers.IO) {
                     LocalModelTester.release()
@@ -171,40 +184,93 @@ class LocalModelActivity : ComponentActivity() {
 
                 val load = benchmark.first
                 val runs = benchmark.second
-                val avgInference = runs.map { it.inferenceMs }.average()
-                val avgPrompt = runs.map { it.promptEvalMs }.average()
-                val avgGenerate = runs.map { it.generateMs }.average()
-                val avgTps = runs.map { it.tokensPerSecond }.average()
+                resultView.text = buildBenchmarkText(slot, modelFile, load, runs)
+            } catch (e: OutOfMemoryError) {
+                resultView.text = "${slot.label}\n메모리 부족(OOM)."
+            } catch (e: Exception) {
+                resultView.text = "${slot.label}\n벤치 오류: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
 
+    private fun runToneBenchmark(slot: ModelSlot) {
+        val modelFile = slotFile(slot)
+        if (!modelFile.exists() || modelFile.length() <= 0L) {
+            Toast.makeText(this, "${slot.label} 모델 파일을 먼저 선택하세요", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        lifecycleScope.launch {
+            resultView.text = "${slot.label}\n말투 8종 번역 중…\n정중체·반말·거친 말투·여성어·고어체·상하관계를 확인합니다."
+            try {
+                val data = withContext(Dispatchers.IO) {
+                    LocalModelTester.release()
+                    val load = LocalModelTester.load(modelFile.absolutePath, 6)
+                    val results = toneCases.map { case ->
+                        case to LocalModelTester.translate(
+                            modelPath = modelFile.absolutePath,
+                            japaneseText = case.japanese,
+                            threads = 6,
+                            promptMode = LocalModelTester.PromptMode.COMPACT,
+                            disableThinking = slot.disableThinking
+                        )
+                    }
+                    Pair(load, results)
+                }
+
+                val avgMs = data.second.map { it.second.inferenceMs }.average()
+                val avgTps = data.second.map { it.second.tokensPerSecond }.average()
                 resultView.text = buildString {
                     append(slot.label)
                     if (slot.disableThinking) append(" · /no_think")
-                    append("\n파일 크기: ")
-                    append(formatBytes(modelFile.length()))
-                    append("\n모델 로딩: ")
-                    append(String.format("%.2f초", load.elapsedMs / 1000.0))
-                    append("\n\n[3회 평균]")
-                    append("\n순수 번역: ")
-                    append(String.format("%.2f초", avgInference / 1000.0))
-                    append("\nprompt eval: ")
-                    append(String.format("%.0f ms", avgPrompt))
-                    append("\ngenerate: ")
-                    append(String.format("%.0f ms", avgGenerate))
-                    append("\n생성 속도: ")
-                    append(String.format("%.2f tok/s", avgTps))
-                    runs.forEachIndexed { index, r ->
+                    append("\n말투 보존 8종 테스트")
+                    append("\n모델 로딩: ${String.format("%.2f초", data.first.elapsedMs / 1000.0)}")
+                    append("\n평균 번역: ${String.format("%.2f초", avgMs / 1000.0)}")
+                    append("\n평균 생성: ${String.format("%.2f tok/s", avgTps)}")
+                    data.second.forEachIndexed { index, pair ->
                         append("\n\n[")
                         append(index + 1)
-                        append("회] ")
-                        append(String.format("%.2f초 / %.2f tok/s", r.inferenceMs / 1000.0, r.tokensPerSecond))
-                        append("\n")
-                        append(r.text)
+                        append("] ")
+                        append(pair.first.label)
+                        append(" · ")
+                        append(String.format("%.2f초", pair.second.inferenceMs / 1000.0))
+                        append("\nJP: ")
+                        append(pair.first.japanese)
+                        append("\nKO: ")
+                        append(pair.second.text)
                     }
                 }
             } catch (e: OutOfMemoryError) {
-                resultView.text = "${slot.label}\n메모리 부족(OOM). 이 모델은 현재 설정에서 실사용 후보로 부적합할 수 있습니다."
+                resultView.text = "${slot.label}\n메모리 부족(OOM)."
             } catch (e: Exception) {
-                resultView.text = "${slot.label}\n벤치 오류: ${e.message ?: e.javaClass.simpleName}"
+                resultView.text = "${slot.label}\n말투 테스트 오류: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    private fun buildBenchmarkText(
+        slot: ModelSlot,
+        modelFile: File,
+        load: LocalModelTester.LoadResult,
+        runs: List<LocalModelTester.Result>
+    ): String {
+        val avgInference = runs.map { it.inferenceMs }.average()
+        val avgPrompt = runs.map { it.promptEvalMs }.average()
+        val avgGenerate = runs.map { it.generateMs }.average()
+        val avgTps = runs.map { it.tokensPerSecond }.average()
+        return buildString {
+            append(slot.label)
+            if (slot.disableThinking) append(" · /no_think")
+            append("\n파일 크기: ${formatBytes(modelFile.length())}")
+            append("\n모델 로딩: ${String.format("%.2f초", load.elapsedMs / 1000.0)}")
+            append("\n\n[3회 평균]")
+            append("\n순수 번역: ${String.format("%.2f초", avgInference / 1000.0)}")
+            append("\nprompt eval: ${String.format("%.0f ms", avgPrompt)}")
+            append("\ngenerate: ${String.format("%.0f ms", avgGenerate)}")
+            append("\n생성 속도: ${String.format("%.2f tok/s", avgTps)}")
+            runs.forEachIndexed { index, r ->
+                append("\n\n[${index + 1}회] ${String.format("%.2f초 / %.2f tok/s", r.inferenceMs / 1000.0, r.tokensPerSecond)}")
+                append("\n${r.text}")
             }
         }
     }
@@ -223,8 +289,7 @@ class LocalModelActivity : ComponentActivity() {
         ModelSlot.entries.forEach { slot ->
             val file = slotFile(slot)
             slotViews[slot]?.text = if (file.exists() && file.length() > 0L) {
-                "준비됨 · ${file.name} · ${formatBytes(file.length())}" +
-                    if (slot.disableThinking) " · /no_think" else ""
+                "준비됨 · ${file.name} · ${formatBytes(file.length())}" + if (slot.disableThinking) " · /no_think" else ""
             } else {
                 "파일 없음"
             }
