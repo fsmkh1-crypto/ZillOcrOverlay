@@ -1,11 +1,13 @@
 package kr.co.zillocr.overlay.db
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 
-@Entity(tableName = "translations")
+@Entity(
+    tableName = "translations",
+    primaryKeys = ["sourceText", "model"]
+)
 data class TranslationEntity(
-    @PrimaryKey val sourceText: String,
+    val sourceText: String,
     val translatedText: String,
     val model: String,
     val createdAt: Long,
