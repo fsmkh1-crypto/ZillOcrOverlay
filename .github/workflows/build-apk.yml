@@ -51,37 +51,29 @@ jobs:
 
       - name: Package Claude review source
         run: |
-          rm -rf claude-review-source ZillOcrOverlay-source-for-Claude.zip
-          mkdir -p claude-review-source/app
-          cp -R app/src claude-review-source/app/src
-          cp app/build.gradle.kts claude-review-source/app/build.gradle.kts
-          for f in settings.gradle.kts build.gradle.kts gradle.properties; do
-            if [ -f "$f" ]; then cp "$f" claude-review-source/; fi
-          done
-          mkdir -p claude-review-source/.github/workflows
-          cp .github/workflows/build-apk.yml claude-review-source/.github/workflows/build-apk.yml
-          cat > claude-review-source/CLAUDE_REVIEW_NOTES.md <<'EOF'
-          # Claude review request
+          rm -rf claude-review
+          mkdir -p claude-review
+          cp -R app/src claude-review/app-src
+          cp app/build.gradle.kts claude-review/app-build.gradle.kts
+          cp build.gradle.kts settings.gradle.kts gradle.properties claude-review/
+          cp .github/workflows/build-apk.yml claude-review/build-apk.yml
+          cat > claude-review/CLAUDE_REVIEW_NOTES.md <<'EOF'
+          # Zill OCR Overlay review package
 
-          Please review this Android real-time Japanese→Korean RPG translation overlay source.
+          Review the current branch as an Android/Kotlin code review. Classify findings as **must fix / recommended / optional**.
 
-          Prioritize findings as:
-          1. Must fix
-          2. Recommended
-          3. Optional
-
-          Focus especially on:
-          - translation quality and prompt/input construction
-          - speaker detection, speaker registry, sticky-speaker narration contamination, and unknown-speaker registration
-          - Room migrations and cache correctness
-          - in-flight request cancellation / race conditions
-          - OCR latency and queue behavior
-          - overlay usability and lifecycle stability
-          - any crash/data-loss risks
-
-          Please cite concrete files/functions and propose code-level fixes where useful.
+          Please focus on:
+          - Room migrations and data preservation
+          - approved speaker/OCR alias learning (no silent persistence)
+          - translation override precedence over cache/AI
+          - sticky speaker lifecycle and forced-retry behavior
+          - in-flight request cancellation races
+          - overlay auto-height and manual resize behavior
+          - compact overlay control usability and approval-button safety
+          - correction dialog modality on TYPE_APPLICATION_OVERLAY
+          - HTTP/API error handling
           EOF
-          (cd claude-review-source && zip -qr ../ZillOcrOverlay-source-for-Claude.zip .)
+          (cd claude-review && zip -qr ../ZillOcrOverlay-source-for-Claude.zip .)
 
       - name: Upload Claude review source
         uses: actions/upload-artifact@v4
