@@ -1,6 +1,7 @@
 package kr.co.zillocr.overlay.translation
 
 import android.content.Context
+import kr.co.zillocr.overlay.data.AppContextHolder
 import kr.co.zillocr.overlay.db.AppDatabase
 import kr.co.zillocr.overlay.db.TranslationEntity
 import org.json.JSONArray
@@ -16,6 +17,12 @@ class OpenAiTranslationProvider(
     private val apiKey: String,
     private val model: String
 ) : TranslationProvider {
+
+    constructor(apiKey: String, model: String) : this(
+        AppContextHolder.require(),
+        apiKey,
+        model
+    )
 
     private val database = AppDatabase.get(context)
     private val translationDao = database.translationDao()
