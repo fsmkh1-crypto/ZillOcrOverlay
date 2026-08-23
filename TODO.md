@@ -14,7 +14,8 @@
 - [x] 지정 영역만 ML Kit 일본어 OCR 입력
 - [x] 이전 OCR 결과와 같으면 오버레이 갱신 생략
 - [x] OCR 일본어 결과 오버레이 표시
-- [ ] GitHub Actions `assembleDebug` 성공 확인
+- [x] GitHub Actions `assembleDebug` 성공 확인
+- [x] debug APK artifact 생성 확인
 - [ ] POCO X8 Pro Max 실기기 설치 확인
 - [ ] PPSSPP 실제 화면에서 OCR 정확도 측정
 - [ ] 가로/세로 및 PPSSPP 화면 회전 테스트
