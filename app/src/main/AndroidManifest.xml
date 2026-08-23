@@ -11,6 +11,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ZillOcrOverlay">
         <activity
+            android:name=".LearningManagerActivity"
+            android:exported="false"
+            android:label="화자 · 학습 관리" />
+        <activity
             android:name=".GlossaryManagerActivity"
             android:exported="false"
             android:label="질올 용어집 관리" />
