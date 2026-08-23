@@ -4,7 +4,6 @@ import android.content.Context
 
 object OverlaySettingsStore {
     private const val PREFS = "overlay_settings"
-    private const val KEY_AUTO = "auto_position"
     private const val KEY_X = "x_ratio"
     private const val KEY_Y = "y_ratio"
     private const val KEY_WIDTH = "width_ratio"
@@ -13,7 +12,6 @@ object OverlaySettingsStore {
     private const val KEY_ALPHA = "background_alpha"
 
     data class Settings(
-        val autoPosition: Boolean,
         val xRatio: Float,
         val yRatio: Float,
         val widthRatio: Float,
@@ -25,36 +23,27 @@ object OverlaySettingsStore {
     fun load(context: Context): Settings {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return Settings(
-            autoPosition = prefs.getBoolean(KEY_AUTO, true),
-            xRatio = prefs.getFloat(KEY_X, 0.03f).coerceIn(0f, 0.95f),
-            yRatio = prefs.getFloat(KEY_Y, 0.03f).coerceIn(0f, 0.95f),
-            widthRatio = prefs.getFloat(KEY_WIDTH, 0.74f).coerceIn(0.30f, 0.96f),
-            heightRatio = prefs.getFloat(KEY_HEIGHT, 0.18f).coerceIn(0.10f, 0.50f),
+            xRatio = prefs.getFloat(KEY_X, 0.03f).coerceIn(-0.95f, 0.95f),
+            yRatio = prefs.getFloat(KEY_Y, 0.03f).coerceIn(-0.95f, 0.95f),
+            widthRatio = prefs.getFloat(KEY_WIDTH, 0.74f).coerceIn(0.18f, 0.995f),
+            heightRatio = prefs.getFloat(KEY_HEIGHT, 0.18f).coerceIn(0.08f, 0.92f),
             textSizeSp = prefs.getFloat(KEY_TEXT_SIZE, 19f).coerceIn(13f, 30f),
-            backgroundAlpha = prefs.getInt(KEY_ALPHA, 205).coerceIn(70, 235)
+            backgroundAlpha = prefs.getInt(KEY_ALPHA, 191).coerceIn(0, 255)
         )
     }
 
     fun saveGeometry(
         context: Context,
-        autoPosition: Boolean,
         xRatio: Float,
         yRatio: Float,
         widthRatio: Float,
         heightRatio: Float
     ) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(KEY_AUTO, autoPosition)
-            .putFloat(KEY_X, xRatio.coerceIn(0f, 0.95f))
-            .putFloat(KEY_Y, yRatio.coerceIn(0f, 0.95f))
-            .putFloat(KEY_WIDTH, widthRatio.coerceIn(0.30f, 0.96f))
-            .putFloat(KEY_HEIGHT, heightRatio.coerceIn(0.10f, 0.50f))
-            .apply()
-    }
-
-    fun setAutoPosition(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(KEY_AUTO, enabled)
+            .putFloat(KEY_X, xRatio.coerceIn(-0.95f, 0.95f))
+            .putFloat(KEY_Y, yRatio.coerceIn(-0.95f, 0.95f))
+            .putFloat(KEY_WIDTH, widthRatio.coerceIn(0.18f, 0.995f))
+            .putFloat(KEY_HEIGHT, heightRatio.coerceIn(0.08f, 0.92f))
             .apply()
     }
 
@@ -66,7 +55,7 @@ object OverlaySettingsStore {
 
     fun saveBackgroundAlpha(context: Context, alpha: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putInt(KEY_ALPHA, alpha.coerceIn(70, 235))
+            .putInt(KEY_ALPHA, alpha.coerceIn(0, 255))
             .apply()
     }
 }
