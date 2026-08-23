@@ -68,6 +68,8 @@ class ScreenOcrService : Service() {
     private var selectingRegion = false
     private var lastOcrAt = 0L
     @Volatile private var lastRecognizedText = ""
+    private var candidateOcrText = ""
+    private var candidateOcrHits = 0
     private val ocrInFlight = AtomicBoolean(false)
 
     private val recentJapanese = ArrayDeque<String>()
@@ -229,10 +231,7 @@ class ScreenOcrService : Service() {
             recognizer.process(inputImage)
                 .addOnSuccessListener { result ->
                     val normalized = normalizeText(result.text)
-                    if (normalized.isNotBlank() && normalized != lastRecognizedText) {
-                        lastRecognizedText = normalized
-                        handleRecognizedText(normalized)
-                    }
+                    processOcrCandidate(normalized)
                 }
                 .addOnFailureListener { error ->
                     mainHandler.post {
@@ -246,6 +245,73 @@ class ScreenOcrService : Service() {
         } finally {
             image.close()
         }
+    }
+
+    private fun processOcrCandidate(text: String) {
+        if (text.isBlank()) return
+
+        val stable = lastRecognizedText
+        if (stable.isNotBlank() && textSimilarity(stable, text) >= SAME_TEXT_SIMILARITY) {
+            candidateOcrText = ""
+            candidateOcrHits = 0
+            return
+        }
+
+        if (candidateOcrText.isBlank() || textSimilarity(candidateOcrText, text) < CANDIDATE_SIMILARITY) {
+            candidateOcrText = text
+            candidateOcrHits = 1
+            return
+        }
+
+        candidateOcrHits += 1
+        if (candidateOcrHits < REQUIRED_STABLE_HITS) return
+
+        val accepted = text
+        candidateOcrText = ""
+        candidateOcrHits = 0
+        lastRecognizedText = accepted
+        handleRecognizedText(accepted)
+    }
+
+    private fun textSimilarity(first: String, second: String): Double {
+        val a = canonicalizeForComparison(first)
+        val b = canonicalizeForComparison(second)
+        if (a == b) return 1.0
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+
+        val maxLength = max(a.length, b.length)
+        val distance = levenshteinDistance(a, b)
+        return 1.0 - distance.toDouble() / maxLength.toDouble()
+    }
+
+    private fun canonicalizeForComparison(text: String): String = buildString(text.length) {
+        text.forEach { char ->
+            if (!char.isWhitespace() && char !in OCR_IGNORED_PUNCTUATION) append(char)
+        }
+    }
+
+    private fun levenshteinDistance(first: String, second: String): Int {
+        if (first.isEmpty()) return second.length
+        if (second.isEmpty()) return first.length
+
+        var previous = IntArray(second.length + 1) { it }
+        var current = IntArray(second.length + 1)
+
+        for (i in first.indices) {
+            current[0] = i + 1
+            for (j in second.indices) {
+                val substitutionCost = if (first[i] == second[j]) 0 else 1
+                current[j + 1] = minOf(
+                    current[j] + 1,
+                    previous[j + 1] + 1,
+                    previous[j] + substitutionCost
+                )
+            }
+            val swap = previous
+            previous = current
+            current = swap
+        }
+        return previous[second.length]
     }
 
     private fun handleRecognizedText(text: String) {
@@ -330,7 +396,7 @@ class ScreenOcrService : Service() {
             } catch (error: Exception) {
                 mainHandler.post {
                     if (lastRecognizedText == request.text) {
-                        val detail = error.message?.take(120).orEmpty()
+                        val detail = error.message?.take(160).orEmpty()
                         showResultOverlay(
                             if (detail.isBlank()) "번역 오류: ${error.javaClass.simpleName}"
                             else "번역 오류: $detail"
@@ -453,7 +519,11 @@ class ScreenOcrService : Service() {
             resultView = view
             resultParams = params
         }
-        resultView?.text = text
+
+        val view = resultView ?: return
+        if (view.text?.toString() != text) {
+            view.text = text
+        }
     }
 
     private fun positionResultOutsideRegion() {
@@ -466,13 +536,17 @@ class ScreenOcrService : Service() {
         val maxExpectedHeight = max(view.height, (170 * density).toInt())
         val regionBottom = (region.bottom * screenHeight).toInt()
 
-        params.x = margin
-        params.y = if (region.top >= 0.35f) {
+        val targetX = margin
+        val targetY = if (region.top >= 0.35f) {
             margin
         } else {
             (regionBottom + margin).coerceAtMost(screenHeight - maxExpectedHeight - margin)
                 .coerceAtLeast(margin)
         }
+
+        if (params.x == targetX && params.y == targetY) return
+        params.x = targetX
+        params.y = targetY
         windowManager.updateViewLayout(view, params)
     }
 
@@ -485,7 +559,7 @@ class ScreenOcrService : Service() {
             onSelected = { selected ->
                 ocrRegion = selected
                 RegionStore.save(this, selected)
-                lastRecognizedText = ""
+                resetOcrStabilityState()
                 synchronized(recentJapanese) { recentJapanese.clear() }
                 synchronized(translationLock) { pendingTranslation = null }
                 endRegionSelection()
@@ -511,6 +585,12 @@ class ScreenOcrService : Service() {
 
         windowManager.addView(selector, params)
         selectorView = selector
+    }
+
+    private fun resetOcrStabilityState() {
+        lastRecognizedText = ""
+        candidateOcrText = ""
+        candidateOcrHits = 0
     }
 
     private fun endRegionSelection() {
@@ -605,6 +685,10 @@ class ScreenOcrService : Service() {
         const val EXTRA_PROJECTION_DATA = "projection_data"
 
         private const val OCR_INTERVAL_MS = 500L
+        private const val REQUIRED_STABLE_HITS = 2
+        private const val SAME_TEXT_SIMILARITY = 0.86
+        private const val CANDIDATE_SIMILARITY = 0.90
+        private const val OCR_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
         private const val NOTIFICATION_CHANNEL_ID = "zill_ocr_capture"
         private const val NOTIFICATION_ID = 1001
     }
