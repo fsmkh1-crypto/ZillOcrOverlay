@@ -1,18 +1,28 @@
 package kr.co.zillocr.overlay.translation
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.LinkedHashMap
 
+/**
+ * OpenRouter-backed provider. The historical class name is kept for now to avoid
+ * unnecessary Stage 2 refactoring; it can be renamed when providers are split later.
+ */
 class OpenAiTranslationProvider(
     private val apiKey: String,
     private val model: String
 ) : TranslationProvider {
 
     override fun translate(japaneseText: String, previousContext: List<String>): String {
-        require(apiKey.isNotBlank()) { "OpenAI API key is missing" }
+        require(apiKey.isNotBlank()) { "OpenRouter API key is missing" }
+
+        synchronized(memoryCache) {
+            memoryCache[japaneseText]?.let { return it }
+        }
 
         val contextBlock = if (previousContext.isEmpty()) {
             "(없음)"
@@ -33,20 +43,29 @@ class OpenAiTranslationProvider(
             $japaneseText
         """.trimIndent()
 
+        val messages = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", prompt)
+            })
+        }
+
         val requestBody = JSONObject().apply {
-            put("model", model)
-            put("input", prompt)
-            put("max_output_tokens", 220)
-            put("store", false)
+            put("model", model.ifBlank { DEFAULT_MODEL })
+            put("messages", messages)
+            put("max_tokens", 220)
+            put("temperature", 0.2)
         }.toString()
 
         val connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 10_000
-            readTimeout = 20_000
+            readTimeout = 25_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $apiKey")
+            setRequestProperty("HTTP-Referer", "https://github.com/fsmkh1-crypto/ZillOcrOverlay")
+            setRequestProperty("X-Title", "Zill OCR Overlay")
         }
 
         try {
@@ -64,12 +83,17 @@ class OpenAiTranslationProvider(
                         .optJSONObject("error")
                         ?.optString("message")
                 }.getOrNull().orEmpty()
-                throw IllegalStateException(message.ifBlank { "OpenAI API HTTP $status" })
+                throw IllegalStateException(message.ifBlank { "OpenRouter API HTTP $status" })
             }
 
-            return extractOutputText(responseText)
+            val translated = extractOutputText(responseText)
                 .trim()
                 .ifBlank { throw IllegalStateException("번역 결과가 비어 있습니다") }
+
+            synchronized(memoryCache) {
+                memoryCache[japaneseText] = translated
+            }
+            return translated
         } finally {
             connection.disconnect()
         }
@@ -77,23 +101,20 @@ class OpenAiTranslationProvider(
 
     private fun extractOutputText(responseText: String): String {
         val root = JSONObject(responseText)
-        val output = root.optJSONArray("output") ?: return ""
-        for (i in 0 until output.length()) {
-            val item = output.optJSONObject(i) ?: continue
-            if (item.optString("type") != "message") continue
-            val content = item.optJSONArray("content") ?: continue
-            for (j in 0 until content.length()) {
-                val part = content.optJSONObject(j) ?: continue
-                if (part.optString("type") == "output_text") {
-                    val text = part.optString("text")
-                    if (text.isNotBlank()) return text
-                }
-            }
-        }
-        return ""
+        val choices = root.optJSONArray("choices") ?: return ""
+        val first = choices.optJSONObject(0) ?: return ""
+        return first.optJSONObject("message")?.optString("content").orEmpty()
     }
 
     companion object {
-        private const val API_URL = "https://api.openai.com/v1/responses"
+        private const val API_URL = "https://openrouter.ai/api/v1/chat/completions"
+        private const val DEFAULT_MODEL = "openrouter/free"
+        private const val MAX_CACHE_ENTRIES = 256
+
+        private val memoryCache = object : LinkedHashMap<String, String>(MAX_CACHE_ENTRIES, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
+                return size > MAX_CACHE_ENTRIES
+            }
+        }
     }
 }
