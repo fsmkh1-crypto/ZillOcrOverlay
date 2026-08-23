@@ -20,6 +20,12 @@
 - README / TODO / ARCHITECTURE / CHANGELOG 문서화
 - GitHub Actions 기반 debug APK 자동 빌드 구성
 
+### Fixed
+
+- Kotlin 2.3에서 제거된 legacy `kotlinOptions.jvmTarget` 설정을 `compilerOptions` DSL로 전환
+- `compileSdk 36` / AGP 8.13.2와 맞도록 AndroidX Core KTX 1.17.0 및 Activity KTX 1.12.4로 고정
+- nullable `MediaProjection` 객체에서 `createVirtualDisplay()`를 호출하던 컴파일 오류 수정
+
 ### Known issues
 
 - POCO X8 Pro Max / HyperOS 실기기 동작 검증 필요
@@ -31,4 +37,5 @@
 
 - XML parser validation passed.
 - Kotlin parser-level smoke check found no syntax parser errors.
-- Full Android build is validated by GitHub Actions.
+- GitHub Actions에서 실제 `assembleDebug` 성공.
+- `app-debug.apk` artifact 생성 및 업로드 성공.
