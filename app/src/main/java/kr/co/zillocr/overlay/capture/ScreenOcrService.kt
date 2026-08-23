@@ -25,6 +25,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -138,6 +139,7 @@ class ScreenOcrService : Service() {
     override fun onDestroy() {
         removeAllOverlays()
         releaseProjectionResources(stopProjection = true)
+        OpenAiTranslationProvider.clearDialogueContext()
         recognizer.close()
         captureThread.quitSafely()
         translationExecutor.shutdownNow()
@@ -463,6 +465,7 @@ class ScreenOcrService : Service() {
         controls.addView(compactButton("A−", 36) { changeOverlayTextSize(-1f) })
         controls.addView(compactButton("A+", 36) { changeOverlayTextSize(1f) })
         controls.addView(compactButton("투", 34) { cycleOverlayAlpha() })
+        controls.addView(compactButton("숨", 34) { toggleResultVisibility() })
         controls.addView(compactButton("■", 34) { stopSelf() })
 
         root.addView(menu)
@@ -484,6 +487,12 @@ class ScreenOcrService : Service() {
 
         windowManager.addView(root, params)
         controlView = root
+    }
+
+    private fun toggleResultVisibility() {
+        resultContainer?.let { view ->
+            view.visibility = if (view.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
     }
 
     private fun showResultOverlay(text: String) {
@@ -526,7 +535,8 @@ class ScreenOcrService : Service() {
                 textSize = overlayTextSizeSp
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8), dp(4), dp(8), dp(6))
-                maxLines = 12
+                maxLines = 20
+                ellipsize = TextUtils.TruncateAt.END
             }
 
             container.addView(header, LinearLayout.LayoutParams.MATCH_PARENT, dp(26))
@@ -695,6 +705,7 @@ class ScreenOcrService : Service() {
                 resetOcrStabilityState()
                 synchronized(recentJapanese) { recentJapanese.clear() }
                 synchronized(translationLock) { pendingTranslation = null }
+                OpenAiTranslationProvider.clearDialogueContext()
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")
             },
