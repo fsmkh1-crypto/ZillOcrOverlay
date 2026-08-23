@@ -48,3 +48,45 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Package Claude review source
+        run: |
+          rm -rf claude-review-source ZillOcrOverlay-source-for-Claude.zip
+          mkdir -p claude-review-source/app
+          cp -R app/src claude-review-source/app/src
+          cp app/build.gradle.kts claude-review-source/app/build.gradle.kts
+          for f in settings.gradle.kts build.gradle.kts gradle.properties; do
+            if [ -f "$f" ]; then cp "$f" claude-review-source/; fi
+          done
+          mkdir -p claude-review-source/.github/workflows
+          cp .github/workflows/build-apk.yml claude-review-source/.github/workflows/build-apk.yml
+          cat > claude-review-source/CLAUDE_REVIEW_NOTES.md <<'EOF'
+          # Claude review request
+
+          Please review this Android real-time Japanese→Korean RPG translation overlay source.
+
+          Prioritize findings as:
+          1. Must fix
+          2. Recommended
+          3. Optional
+
+          Focus especially on:
+          - translation quality and prompt/input construction
+          - speaker detection, speaker registry, sticky-speaker narration contamination, and unknown-speaker registration
+          - Room migrations and cache correctness
+          - in-flight request cancellation / race conditions
+          - OCR latency and queue behavior
+          - overlay usability and lifecycle stability
+          - any crash/data-loss risks
+
+          Please cite concrete files/functions and propose code-level fixes where useful.
+          EOF
+          (cd claude-review-source && zip -qr ../ZillOcrOverlay-source-for-Claude.zip .)
+
+      - name: Upload Claude review source
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZillOcrOverlay-source-for-Claude
+          path: ZillOcrOverlay-source-for-Claude.zip
+          if-no-files-found: error
+          retention-days: 14
