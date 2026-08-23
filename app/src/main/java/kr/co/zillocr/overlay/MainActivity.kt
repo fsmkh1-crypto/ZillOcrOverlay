@@ -3,6 +3,7 @@ package kr.co.zillocr.overlay
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -91,7 +92,7 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.2.1"
+            text = "질올 실시간 번역 오버레이 · 0.2.3"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -136,7 +137,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ 기본 모델은 openrouter/free입니다. 무료 계정은 호출 제한이 있으므로 같은 일본어 문장은 실행 중 메모리 캐시에서 재사용합니다. API 키는 앱 전용 저장공간에 보관합니다."
+            text = "※ Android 14 이상에서는 앱 선택 대신 전체 디스플레이 캡처만 요청합니다. PPSSPP를 별도로 목록에서 고를 필요가 없습니다."
             textSize = 12f
             setPadding(0, dp(6), 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -154,7 +155,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: OpenRouter 키 입력·저장 → 시작 → 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
+            text = "사용: OpenRouter 키 입력·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -189,6 +190,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchProjectionConsent() {
-        projectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val config = MediaProjectionConfig.createConfigForDefaultDisplay()
+            mediaProjectionManager.createScreenCaptureIntent(config)
+        } else {
+            mediaProjectionManager.createScreenCaptureIntent()
+        }
+        projectionLauncher.launch(captureIntent)
     }
 }
