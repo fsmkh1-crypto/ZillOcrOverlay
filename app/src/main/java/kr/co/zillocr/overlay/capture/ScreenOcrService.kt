@@ -235,13 +235,9 @@ class ScreenOcrService : Service() {
 
             val inputImage = InputImage.fromBitmap(cropped, 0)
             recognizer.process(inputImage)
-                .addOnSuccessListener { result ->
-                    processOcrCandidate(normalizeText(result.text))
-                }
+                .addOnSuccessListener { result -> processOcrCandidate(normalizeText(result.text)) }
                 .addOnFailureListener { error ->
-                    mainHandler.post {
-                        showResultOverlay("OCR 오류: ${error.javaClass.simpleName}")
-                    }
+                    mainHandler.post { showResultOverlay("OCR 오류: ${error.javaClass.simpleName}") }
                 }
                 .addOnCompleteListener {
                     cropped.recycle()
@@ -301,7 +297,6 @@ class ScreenOcrService : Service() {
 
         var previous = IntArray(second.length + 1) { it }
         var current = IntArray(second.length + 1)
-
         for (i in first.indices) {
             current[0] = i + 1
             for (j in second.indices) {
@@ -320,9 +315,7 @@ class ScreenOcrService : Service() {
     }
 
     private fun handleRecognizedText(text: String) {
-        val previousContext = synchronized(recentJapanese) {
-            recentJapanese.toList().takeLast(2)
-        }
+        val previousContext = synchronized(recentJapanese) { recentJapanese.toList().takeLast(2) }
 
         synchronized(recentJapanese) {
             if (recentJapanese.lastOrNull() != text) {
@@ -336,7 +329,6 @@ class ScreenOcrService : Service() {
             mainHandler.post { showResultOverlay(text) }
             return
         }
-
         if (settings.apiKey.isBlank()) {
             mainHandler.post { showResultOverlay("API 키를 앱에서 먼저 입력하세요\n\n$text") }
             return
@@ -381,7 +373,6 @@ class ScreenOcrService : Service() {
                     japaneseText = request.text,
                     previousContext = request.context
                 )
-
                 mainHandler.post {
                     if (lastRecognizedText == request.text) showResultOverlay(translated)
                 }
@@ -409,7 +400,6 @@ class ScreenOcrService : Service() {
         val rowPadding = rowStride - pixelStride * screenWidth
         val paddedWidth = screenWidth + rowPadding / pixelStride
         val fullBitmap = Bitmap.createBitmap(paddedWidth, screenHeight, Bitmap.Config.ARGB_8888)
-
         buffer.rewind()
         fullBitmap.copyPixelsFromBuffer(buffer)
 
@@ -438,27 +428,45 @@ class ScreenOcrService : Service() {
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xAA111111.toInt())
-            setPadding(dp(3), dp(3), dp(3), dp(3))
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(0x77111111)
+            setPadding(dp(2), dp(2), dp(2), dp(2))
         }
 
-        fun addButton(label: String, action: () -> Unit) {
-            container.addView(Button(this).apply {
-                text = label
-                textSize = 11f
-                minimumHeight = dp(34)
-                setPadding(dp(4), 0, dp(4), 0)
-                setOnClickListener { action() }
-            })
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
         }
 
-        addButton("영역") { beginRegionSelection() }
-        addButton("A-") { changeOverlayTextSize(-1f) }
-        addButton("A+") { changeOverlayTextSize(1f) }
-        addButton("투명") { cycleOverlayAlpha() }
-        addButton("중지") { stopSelf() }
+        fun compactButton(label: String, widthDp: Int, action: () -> Unit): Button = Button(this).apply {
+            text = label
+            textSize = 9f
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(2), 0, dp(2), 0)
+            setOnClickListener { action() }
+            layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(30)).apply { marginEnd = dp(1) }
+        }
+
+        val menu = compactButton("☰", 34) {
+            controls.visibility = if (controls.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            val params = root.layoutParams as? WindowManager.LayoutParams
+            if (params != null) runCatching { windowManager.updateViewLayout(root, params) }
+        }
+
+        controls.addView(compactButton("영역", 44) { beginRegionSelection() })
+        controls.addView(compactButton("A−", 36) { changeOverlayTextSize(-1f) })
+        controls.addView(compactButton("A+", 36) { changeOverlayTextSize(1f) })
+        controls.addView(compactButton("투", 34) { cycleOverlayAlpha() })
+        controls.addView(compactButton("■", 34) { stopSelf() })
+
+        root.addView(menu)
+        root.addView(controls)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -471,11 +479,11 @@ class ScreenOcrService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = dp(6)
-            y = dp(58)
+            y = dp(40)
         }
 
-        windowManager.addView(container, params)
-        controlView = container
+        windowManager.addView(root, params)
+        controlView = root
     }
 
     private fun showResultOverlay(text: String) {
@@ -736,7 +744,6 @@ class ScreenOcrService : Service() {
         imageReader?.setOnImageAvailableListener(null, null)
         imageReader?.close()
         imageReader = null
-
         virtualDisplay?.release()
         virtualDisplay = null
 
