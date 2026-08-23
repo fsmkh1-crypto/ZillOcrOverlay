@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,34 +18,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-
-      - name: Apply issue 24 learning inbox patch
-        run: |
-          if grep -q '0.5.0-alpha8.4' app/build.gradle.kts; then
-            echo 'issue24 patch already applied'
-          else
-            python3 tools/apply_issue24_learning_inbox.py
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add app/src/main/java/kr/co/zillocr/overlay/translation/OpenAiTranslationProvider.kt app/src/main/java/kr/co/zillocr/overlay/capture/ScreenOcrService.kt app/src/main/java/kr/co/zillocr/overlay/MainActivity.kt app/build.gradle.kts
-            git commit -m 'Implement learning candidate inbox'
-            git push origin HEAD:${{ github.head_ref }}
-          fi
-
-      - name: Fix issue 24 candidate type references
-        run: |
-          if grep -q 'OpenAiTranslationProvider.PendingSpeakerCandidate' app/src/main/java/kr/co/zillocr/overlay/LearningManagerActivity.kt; then
-            python3 tools/fix_issue24_candidate_types.py
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add app/src/main/java/kr/co/zillocr/overlay/LearningManagerActivity.kt
-            git commit -m 'Fix learning inbox candidate type references'
-            git push origin HEAD:${{ github.head_ref }}
-          else
-            echo 'candidate type references already fixed'
-          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
