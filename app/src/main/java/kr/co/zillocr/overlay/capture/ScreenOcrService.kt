@@ -37,6 +37,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
@@ -100,7 +101,7 @@ class ScreenOcrService : Service() {
     private var controlView: View? = null
     private var selectorView: RegionSelectionView? = null
     private var correctionDialog: AlertDialog? = null
-    private var detailsPanel: LinearLayout? = null
+    private var detailsPanel: View? = null
     private var primaryActions: LinearLayout? = null
     private var gearBadgeView: TextView? = null
     private var speakerApprovalButton: Button? = null
@@ -712,6 +713,10 @@ class ScreenOcrService : Service() {
         primaryBar.addView(menu)
         actions.addView(primaryButton("숨") { toggleResultVisibility() })
         actions.addView(primaryButton("재") { retryLastTranslation() })
+        actions.addView(primaryButton("영역") {
+            detailsPanel?.visibility = View.GONE
+            beginRegionSelection()
+        })
 
         val gearFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(4) }
@@ -750,14 +755,19 @@ class ScreenOcrService : Service() {
         root.addView(primaryBar)
 
         val panelWidth = minOf(dp(240), (screenWidth - dp(16)).coerceAtLeast(dp(190)))
+        val panelMaxHeight = (screenHeight - dp(110)).coerceAtLeast(dp(160))
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xF21C1C22.toInt())
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(panelWidth, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
         }
-        detailsPanel = panel
+        val panelScroll = ScrollView(this).apply {
+            isFillViewport = false
+            visibility = View.GONE
+            addView(panel, ScrollView.LayoutParams(panelWidth, ScrollView.LayoutParams.WRAP_CONTENT))
+            layoutParams = LinearLayout.LayoutParams(panelWidth, panelMaxHeight).apply { topMargin = dp(6) }
+        }
+        detailsPanel = panelScroll
 
         fun groupLabel(label: String, learning: Boolean = false): TextView = TextView(this).apply {
             text = label
@@ -812,9 +822,9 @@ class ScreenOcrService : Service() {
         panel.addView(learningGroup, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         panel.addView(groupLabel("세션"))
-        panel.addView(panelButton("OCR 영역 다시 지정") { beginRegionSelection(); panel.visibility = View.GONE })
+        panel.addView(panelButton("OCR 영역 다시 지정") { beginRegionSelection(); panelScroll.visibility = View.GONE })
         panel.addView(panelButton("화자 · 학습 관리 열기") { openLearningManager() })
-        root.addView(panel)
+        root.addView(panelScroll)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
