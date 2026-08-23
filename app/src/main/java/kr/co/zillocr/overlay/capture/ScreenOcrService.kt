@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -168,6 +169,43 @@ class ScreenOcrService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post { handleConfigurationChange() }
+    }
+
+    private fun handleConfigurationChange() {
+        val oldWidth = screenWidth
+        val oldHeight = screenHeight
+        val oldDensityDpi = densityDpi
+        val displayedText = resultView?.text?.toString().orEmpty()
+        val resultWasVisible = resultContainer?.visibility != View.GONE
+        val selectionWasActive = selectorView != null
+
+        if (oldWidth > 0 && oldHeight > 0) {
+            resultParams?.let { saveOverlayGeometry(it) }
+        }
+        if (selectionWasActive) endRegionSelection()
+
+        updateScreenMetrics()
+        if (screenWidth == oldWidth && screenHeight == oldHeight && densityDpi == oldDensityDpi) {
+            if (selectionWasActive) beginRegionSelection()
+            return
+        }
+
+        resetOcrStabilityState()
+        if (mediaProjection != null) reconfigureCaptureSurface()
+
+        removeControlOverlay()
+        removeResultOverlay()
+        showControlOverlay()
+        if (displayedText.isNotBlank()) {
+            showResultOverlay(displayedText)
+            if (!resultWasVisible) resultContainer?.visibility = View.GONE
+        }
+        if (selectionWasActive) beginRegionSelection()
+    }
+
     override fun onDestroy() {
         synchronized(translationLock) {
             currentProvider?.cancelInFlight()
@@ -245,6 +283,36 @@ class ScreenOcrService : Service() {
             }
         }
         densityDpi = resources.configuration.densityDpi
+    }
+
+    private fun reconfigureCaptureSurface() {
+        val projection = mediaProjection ?: return
+        val oldReader = imageReader
+        oldReader?.setOnImageAvailableListener(null, null)
+        virtualDisplay?.setSurface(null)
+        oldReader?.close()
+
+        val newReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2).apply {
+            setOnImageAvailableListener({ reader -> onImageAvailable(reader) }, captureHandler)
+        }
+        imageReader = newReader
+
+        val display = virtualDisplay
+        if (display != null) {
+            display.resize(screenWidth, screenHeight, densityDpi)
+            display.setSurface(newReader.surface)
+        } else {
+            virtualDisplay = projection.createVirtualDisplay(
+                "ZillOcrCapture",
+                screenWidth,
+                screenHeight,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                newReader.surface,
+                null,
+                captureHandler
+            )
+        }
     }
 
     private fun onImageAvailable(reader: ImageReader) {
@@ -649,15 +717,18 @@ class ScreenOcrService : Service() {
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride
         if (pixelStride <= 0 || rowStride <= 0) return null
-        val rowPadding = rowStride - pixelStride * screenWidth
-        val paddedWidth = screenWidth + rowPadding / pixelStride
-        val fullBitmap = Bitmap.createBitmap(paddedWidth, screenHeight, Bitmap.Config.ARGB_8888)
+        val captureWidth = image.width
+        val captureHeight = image.height
+        if (captureWidth <= 0 || captureHeight <= 0) return null
+        val rowPadding = rowStride - pixelStride * captureWidth
+        val paddedWidth = captureWidth + rowPadding / pixelStride
+        val fullBitmap = Bitmap.createBitmap(paddedWidth, captureHeight, Bitmap.Config.ARGB_8888)
         buffer.rewind()
         fullBitmap.copyPixelsFromBuffer(buffer)
-        val left = (normalizedRegion.left * screenWidth).toInt().coerceIn(0, screenWidth - 1)
-        val top = (normalizedRegion.top * screenHeight).toInt().coerceIn(0, screenHeight - 1)
-        val right = (normalizedRegion.right * screenWidth).toInt().coerceIn(left + 1, screenWidth)
-        val bottom = (normalizedRegion.bottom * screenHeight).toInt().coerceIn(top + 1, screenHeight)
+        val left = (normalizedRegion.left * captureWidth).toInt().coerceIn(0, captureWidth - 1)
+        val top = (normalizedRegion.top * captureHeight).toInt().coerceIn(0, captureHeight - 1)
+        val right = (normalizedRegion.right * captureWidth).toInt().coerceIn(left + 1, captureWidth)
+        val bottom = (normalizedRegion.bottom * captureHeight).toInt().coerceIn(top + 1, captureHeight)
         return try {
             Bitmap.createBitmap(fullBitmap, left, top, right - left, bottom - top)
         } finally {
@@ -755,7 +826,7 @@ class ScreenOcrService : Service() {
         root.addView(primaryBar)
 
         val panelWidth = minOf(dp(240), (screenWidth - dp(16)).coerceAtLeast(dp(190)))
-        val panelMaxHeight = (screenHeight - dp(110)).coerceAtLeast(dp(160))
+        val panelMaxHeight = (screenHeight - dp(110)).coerceAtLeast(dp(96))
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xF21C1C22.toInt())
@@ -1147,14 +1218,15 @@ class ScreenOcrService : Service() {
         selectingRegion = false
     }
 
-    private fun removeAllOverlays() {
-        selectorView?.let { runCatching { windowManager.removeView(it) } }
+    private fun removeResultOverlay() {
         resultContainer?.let { runCatching { windowManager.removeView(it) } }
-        controlView?.let { runCatching { windowManager.removeView(it) } }
-        selectorView = null
         resultContainer = null
         resultView = null
         resultParams = null
+    }
+
+    private fun removeControlOverlay() {
+        controlView?.let { runCatching { windowManager.removeView(it) } }
         controlView = null
         detailsPanel = null
         primaryActions = null
@@ -1164,6 +1236,14 @@ class ScreenOcrService : Service() {
         autoHeightButton = null
         speakerModeButton = null
         alphaButton = null
+    }
+
+    private fun removeAllOverlays() {
+        selectorView?.let { runCatching { windowManager.removeView(it) } }
+        selectorView = null
+        selectingRegion = false
+        removeResultOverlay()
+        removeControlOverlay()
     }
 
     private fun releaseProjectionResources(stopProjection: Boolean) {
