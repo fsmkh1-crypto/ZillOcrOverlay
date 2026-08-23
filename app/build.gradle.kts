@@ -44,7 +44,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.12.4")
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
-    implementation("dev.ffmpegkit-maintained:llama-android:0.1.1")
 
     val roomVersion = "2.8.4"
     implementation("androidx.room:room-runtime:$roomVersion")
