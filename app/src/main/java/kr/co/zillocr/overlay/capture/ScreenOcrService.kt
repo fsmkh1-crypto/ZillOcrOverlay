@@ -26,6 +26,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -37,6 +38,7 @@ import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import kr.co.zillocr.overlay.MainActivity
 import kr.co.zillocr.overlay.R
+import kr.co.zillocr.overlay.data.OverlaySettingsStore
 import kr.co.zillocr.overlay.data.RegionStore
 import kr.co.zillocr.overlay.data.TranslationSettingsStore
 import kr.co.zillocr.overlay.overlay.RegionSelectionView
@@ -78,10 +80,15 @@ class ScreenOcrService : Service() {
     private var translationRunning = false
     private var pendingTranslation: TranslationRequest? = null
 
+    private var resultContainer: LinearLayout? = null
     private var resultView: TextView? = null
     private var resultParams: WindowManager.LayoutParams? = null
     private var controlView: View? = null
     private var selectorView: RegionSelectionView? = null
+
+    private var autoPositionEnabled = true
+    private var overlayTextSizeSp = 19f
+    private var overlayAlpha = 205
 
     private data class TranslationRequest(
         val text: String,
@@ -230,8 +237,7 @@ class ScreenOcrService : Service() {
             val inputImage = InputImage.fromBitmap(cropped, 0)
             recognizer.process(inputImage)
                 .addOnSuccessListener { result ->
-                    val normalized = normalizeText(result.text)
-                    processOcrCandidate(normalized)
+                    processOcrCandidate(normalizeText(result.text))
                 }
                 .addOnFailureListener { error ->
                     mainHandler.post {
@@ -362,9 +368,7 @@ class ScreenOcrService : Service() {
                 shouldStart = true
             }
         }
-        if (shouldStart) {
-            translationExecutor.execute { drainTranslationQueue() }
-        }
+        if (shouldStart) translationExecutor.execute { drainTranslationQueue() }
     }
 
     private fun drainTranslationQueue() {
@@ -372,9 +376,7 @@ class ScreenOcrService : Service() {
             val request = synchronized(translationLock) {
                 val next = pendingTranslation
                 pendingTranslation = null
-                if (next == null) {
-                    translationRunning = false
-                }
+                if (next == null) translationRunning = false
                 next
             } ?: return
 
@@ -417,12 +419,7 @@ class ScreenOcrService : Service() {
 
         val rowPadding = rowStride - pixelStride * screenWidth
         val paddedWidth = screenWidth + rowPadding / pixelStride
-
-        val fullBitmap = Bitmap.createBitmap(
-            paddedWidth,
-            screenHeight,
-            Bitmap.Config.ARGB_8888
-        )
+        val fullBitmap = Bitmap.createBitmap(paddedWidth, screenHeight, Bitmap.Config.ARGB_8888)
 
         buffer.rewind()
         fullBitmap.copyPixelsFromBuffer(buffer)
@@ -455,19 +452,29 @@ class ScreenOcrService : Service() {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xAA111111.toInt())
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setPadding(dp(3), dp(3), dp(3), dp(3))
         }
 
-        container.addView(Button(this).apply {
-            text = "영역"
-            textSize = 12f
-            setOnClickListener { beginRegionSelection() }
-        })
-        container.addView(Button(this).apply {
-            text = "중지"
-            textSize = 12f
-            setOnClickListener { stopSelf() }
-        })
+        fun addButton(label: String, action: () -> Unit) {
+            container.addView(Button(this).apply {
+                text = label
+                textSize = 11f
+                minimumHeight = dp(34)
+                setPadding(dp(4), 0, dp(4), 0)
+                setOnClickListener { action() }
+            })
+        }
+
+        addButton("영역") { beginRegionSelection() }
+        addButton("자동") {
+            autoPositionEnabled = true
+            OverlaySettingsStore.setAutoPosition(this, true)
+            positionResultOutsideRegion(force = true)
+        }
+        addButton("A-") { changeOverlayTextSize(-1f) }
+        addButton("A+") { changeOverlayTextSize(1f) }
+        addButton("투명") { cycleOverlayAlpha() }
+        addButton("중지") { stopSelf() }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -479,8 +486,8 @@ class ScreenOcrService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
-            x = dp(8)
-            y = dp(70)
+            x = dp(6)
+            y = dp(58)
         }
 
         windowManager.addView(container, params)
@@ -491,18 +498,61 @@ class ScreenOcrService : Service() {
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
-        if (resultView == null) {
-            val view = TextView(this).apply {
-                setTextColor(Color.WHITE)
-                setBackgroundColor(0xC9000000.toInt())
-                textSize = 19f
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                maxLines = 6
+        if (resultContainer == null) {
+            val saved = OverlaySettingsStore.load(this)
+            autoPositionEnabled = saved.autoPosition
+            overlayTextSizeSp = saved.textSizeSp
+            overlayAlpha = saved.backgroundAlpha
+
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.argb(overlayAlpha, 0, 0, 0))
+                setPadding(dp(6), dp(3), dp(6), dp(6))
             }
 
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val dragHandle = TextView(this).apply {
+                this.text = "≡ 이동"
+                setTextColor(0xFFDDDDDD.toInt())
+                textSize = 11f
+                setPadding(dp(6), dp(2), dp(6), dp(2))
+            }
+            val resizeHandle = TextView(this).apply {
+                this.text = "↘ 크기"
+                setTextColor(0xFFDDDDDD.toInt())
+                textSize = 11f
+                gravity = Gravity.END
+                setPadding(dp(6), dp(2), dp(6), dp(2))
+            }
+            header.addView(dragHandle, LinearLayout.LayoutParams(0, dp(26), 1f))
+            header.addView(resizeHandle, LinearLayout.LayoutParams(dp(70), dp(26)))
+
+            val textView = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = overlayTextSizeSp
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(4), dp(8), dp(6))
+                maxLines = 8
+            }
+
+            container.addView(header, LinearLayout.LayoutParams.MATCH_PARENT, dp(26))
+            container.addView(textView, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ))
+
+            val width = (screenWidth * saved.widthRatio).toInt()
+                .coerceIn(dp(220), (screenWidth * 0.96f).toInt())
+            val height = (screenHeight * saved.heightRatio).toInt()
+                .coerceIn(dp(100), (screenHeight * 0.50f).toInt())
+
             val params = WindowManager.LayoutParams(
-                (screenWidth * 0.74f).toInt(),
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                width,
+                height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -511,43 +561,167 @@ class ScreenOcrService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = dp(14)
-                y = dp(18)
+                x = (saved.xRatio * screenWidth).toInt()
+                y = (saved.yRatio * screenHeight).toInt()
             }
+            clampResultGeometry(params)
 
-            windowManager.addView(view, params)
-            resultView = view
+            attachDragHandler(dragHandle, container, params)
+            attachResizeHandler(resizeHandle, container, params)
+
+            windowManager.addView(container, params)
+            resultContainer = container
+            resultView = textView
             resultParams = params
         }
 
         val view = resultView ?: return
-        if (view.text?.toString() != text) {
-            view.text = text
+        if (view.text?.toString() != text) view.text = text
+    }
+
+    private fun attachDragHandler(
+        handle: View,
+        container: View,
+        params: WindowManager.LayoutParams
+    ) {
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    autoPositionEnabled = false
+                    params.x = startX + (event.rawX - downRawX).toInt()
+                    params.y = startY + (event.rawY - downRawY).toInt()
+                    clampResultGeometry(params)
+                    windowManager.updateViewLayout(container, params)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    autoPositionEnabled = false
+                    saveOverlayGeometry(params)
+                    true
+                }
+                else -> false
+            }
         }
     }
 
-    private fun positionResultOutsideRegion() {
+    private fun attachResizeHandler(
+        handle: View,
+        container: View,
+        params: WindowManager.LayoutParams
+    ) {
+        val density = resources.displayMetrics.density
+        val minWidth = (220 * density).toInt()
+        val minHeight = (100 * density).toInt()
+        val maxWidth = (screenWidth * 0.96f).toInt()
+        val maxHeight = (screenHeight * 0.50f).toInt()
+
+        var downRawX = 0f
+        var downRawY = 0f
+        var startWidth = 0
+        var startHeight = 0
+
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startWidth = params.width
+                    startHeight = params.height
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.width = (startWidth + (event.rawX - downRawX).toInt()).coerceIn(minWidth, maxWidth)
+                    params.height = (startHeight + (event.rawY - downRawY).toInt()).coerceIn(minHeight, maxHeight)
+                    clampResultGeometry(params)
+                    windowManager.updateViewLayout(container, params)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    saveOverlayGeometry(params)
+                    if (autoPositionEnabled) positionResultOutsideRegion(force = true)
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun clampResultGeometry(params: WindowManager.LayoutParams) {
+        params.width = params.width.coerceAtMost(screenWidth)
+        params.height = params.height.coerceAtMost(screenHeight)
+        params.x = params.x.coerceIn(0, max(0, screenWidth - params.width))
+        params.y = params.y.coerceIn(0, max(0, screenHeight - params.height))
+    }
+
+    private fun saveOverlayGeometry(params: WindowManager.LayoutParams) {
+        OverlaySettingsStore.saveGeometry(
+            context = this,
+            autoPosition = autoPositionEnabled,
+            xRatio = params.x.toFloat() / screenWidth.coerceAtLeast(1),
+            yRatio = params.y.toFloat() / screenHeight.coerceAtLeast(1),
+            widthRatio = params.width.toFloat() / screenWidth.coerceAtLeast(1),
+            heightRatio = params.height.toFloat() / screenHeight.coerceAtLeast(1)
+        )
+    }
+
+    private fun changeOverlayTextSize(delta: Float) {
+        overlayTextSizeSp = (overlayTextSizeSp + delta).coerceIn(13f, 30f)
+        resultView?.textSize = overlayTextSizeSp
+        OverlaySettingsStore.saveTextSize(this, overlayTextSizeSp)
+    }
+
+    private fun cycleOverlayAlpha() {
+        overlayAlpha = when {
+            overlayAlpha > 200 -> 175
+            overlayAlpha > 150 -> 130
+            overlayAlpha > 105 -> 90
+            else -> 220
+        }
+        resultContainer?.setBackgroundColor(Color.argb(overlayAlpha, 0, 0, 0))
+        OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)
+    }
+
+    private fun positionResultOutsideRegion(force: Boolean = false) {
+        if (!autoPositionEnabled && !force) return
         val region = ocrRegion ?: return
         val params = resultParams ?: return
-        val view = resultView ?: return
+        val container = resultContainer ?: return
 
         val density = resources.displayMetrics.density
-        val margin = (14 * density).toInt()
-        val maxExpectedHeight = max(view.height, (170 * density).toInt())
+        val margin = (12 * density).toInt()
+        val regionTop = (region.top * screenHeight).toInt()
         val regionBottom = (region.bottom * screenHeight).toInt()
+        val spaceAbove = regionTop - margin
+        val spaceBelow = screenHeight - regionBottom - margin
+        val height = params.height
 
-        val targetX = margin
-        val targetY = if (region.top >= 0.35f) {
-            margin
-        } else {
-            (regionBottom + margin).coerceAtMost(screenHeight - maxExpectedHeight - margin)
-                .coerceAtLeast(margin)
+        val targetY = when {
+            spaceAbove >= height && spaceBelow >= height -> {
+                if (region.top >= 0.5f) regionTop - height - margin else regionBottom + margin
+            }
+            spaceAbove >= height -> regionTop - height - margin
+            spaceBelow >= height -> regionBottom + margin
+            spaceAbove >= spaceBelow -> regionTop - height - margin
+            else -> regionBottom + margin
         }
 
-        if (params.x == targetX && params.y == targetY) return
-        params.x = targetX
+        params.x = margin
         params.y = targetY
-        windowManager.updateViewLayout(view, params)
+        clampResultGeometry(params)
+        windowManager.updateViewLayout(container, params)
+        saveOverlayGeometry(params)
     }
 
     private fun beginRegionSelection() {
@@ -564,11 +738,9 @@ class ScreenOcrService : Service() {
                 synchronized(translationLock) { pendingTranslation = null }
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")
-                positionResultOutsideRegion()
+                positionResultOutsideRegion(force = autoPositionEnabled)
             },
-            onCancelled = {
-                endRegionSelection()
-            }
+            onCancelled = { endRegionSelection() }
         )
 
         val params = WindowManager.LayoutParams(
@@ -594,18 +766,17 @@ class ScreenOcrService : Service() {
     }
 
     private fun endRegionSelection() {
-        selectorView?.let { view ->
-            runCatching { windowManager.removeView(view) }
-        }
+        selectorView?.let { view -> runCatching { windowManager.removeView(view) } }
         selectorView = null
         selectingRegion = false
     }
 
     private fun removeAllOverlays() {
         selectorView?.let { runCatching { windowManager.removeView(it) } }
-        resultView?.let { runCatching { windowManager.removeView(it) } }
+        resultContainer?.let { runCatching { windowManager.removeView(it) } }
         controlView?.let { runCatching { windowManager.removeView(it) } }
         selectorView = null
+        resultContainer = null
         resultView = null
         controlView = null
     }
@@ -620,9 +791,7 @@ class ScreenOcrService : Service() {
 
         mediaProjection?.let { projection ->
             runCatching { projection.unregisterCallback(projectionCallback) }
-            if (stopProjection) {
-                runCatching { projection.stop() }
-            }
+            if (stopProjection) runCatching { projection.stop() }
         }
         mediaProjection = null
     }
@@ -684,9 +853,9 @@ class ScreenOcrService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_PROJECTION_DATA = "projection_data"
 
-        private const val OCR_INTERVAL_MS = 500L
+        private const val OCR_INTERVAL_MS = 320L
         private const val REQUIRED_STABLE_HITS = 2
-        private const val SAME_TEXT_SIMILARITY = 0.86
+        private const val SAME_TEXT_SIMILARITY = 0.92
         private const val CANDIDATE_SIMILARITY = 0.90
         private const val OCR_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
         private const val NOTIFICATION_CHANNEL_ID = "zill_ocr_capture"
