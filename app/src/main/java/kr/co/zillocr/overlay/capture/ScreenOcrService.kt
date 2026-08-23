@@ -115,6 +115,8 @@ class ScreenOcrService : Service() {
     private var speakerAlways = false
     private var lastDisplayedSpeakerTarget: String? = null
     @Volatile private var lastRawTranslation = ""
+    @Volatile private var lastCanonicalSourceText = ""
+    @Volatile private var lastResultRequest: TranslationRequest? = null
     @Volatile private var lastResultSpeakerSource: String? = null
     @Volatile private var lastResultSpeakerTarget: String? = null
 
@@ -389,11 +391,13 @@ class ScreenOcrService : Service() {
                 val speakerTarget = provider.lastSpeakerTarget
                 val explicit = provider.lastSpeakerExplicit
                 val candidate = provider.lastSpeakerWasCandidate
-                lastRawTranslation = translated
-                lastResultSpeakerSource = speakerSource
-                lastResultSpeakerTarget = speakerTarget
                 mainHandler.post {
                     if (lastRecognizedText == request.text) {
+                        lastRawTranslation = translated
+                        lastCanonicalSourceText = provider.lastAliasedText.ifBlank { request.text }
+                        lastResultRequest = request
+                        lastResultSpeakerSource = speakerSource
+                        lastResultSpeakerTarget = speakerTarget
                         showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))
                         showPendingLearningHintIfNeeded()
                     }
@@ -547,13 +551,14 @@ class ScreenOcrService : Service() {
     }
 
     private fun recordPositiveFeedback() {
-        val request = lastTranslationRequest ?: return
+        val request = lastResultRequest ?: return
         if (lastRawTranslation.isBlank()) return
+        val sourceText = lastCanonicalSourceText.ifBlank { request.text }
         val speaker = lastResultSpeakerSource
         learningExecutor.execute {
             AppDatabase.get(this).feedbackDao().insert(
                 FeedbackEntity(
-                    sourceText = request.text,
+                    sourceText = sourceText,
                     model = request.model,
                     rating = 1,
                     category = "good",
@@ -567,7 +572,7 @@ class ScreenOcrService : Service() {
     }
 
     private fun showCorrectionDialog() {
-        val request = lastTranslationRequest ?: return
+        val request = lastResultRequest ?: return
         val current = lastRawTranslation
         if (current.isBlank()) return
         val input = EditText(this).apply {
@@ -593,15 +598,16 @@ class ScreenOcrService : Service() {
 
     private fun saveCorrection(request: TranslationRequest, corrected: String) {
         val speakerSource = lastResultSpeakerSource
+        val sourceText = lastCanonicalSourceText.ifBlank { request.text }
         learningExecutor.execute {
             val db = AppDatabase.get(this)
             val now = System.currentTimeMillis()
             db.translationOverrideDao().upsert(
-                TranslationOverrideEntity(request.text, request.model, corrected, speakerSource, now)
+                TranslationOverrideEntity(sourceText, request.model, corrected, speakerSource, now)
             )
             db.feedbackDao().insert(
                 FeedbackEntity(
-                    sourceText = request.text,
+                    sourceText = sourceText,
                     model = request.model,
                     rating = -1,
                     category = "manual_correction",
@@ -610,7 +616,7 @@ class ScreenOcrService : Service() {
                     createdAt = now
                 )
             )
-            db.translationDao().invalidateContaining(request.text)
+            db.translationDao().invalidateContaining(sourceText)
             OpenAiTranslationProvider.clearMemoryCache()
             lastRawTranslation = corrected
             mainHandler.post {
@@ -1026,6 +1032,7 @@ class ScreenOcrService : Service() {
                             autoHeightEnabled = false
                             OverlaySettingsStore.saveAutoHeight(this, false)
                             Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
+                            updateControlStateLabels()
                         }
                     }
                     if (resizing) {
@@ -1094,7 +1101,9 @@ class ScreenOcrService : Service() {
                     currentProvider?.cancelInFlight()
                 }
                 lastTranslationRequest = null
+                lastResultRequest = null
                 lastRawTranslation = ""
+                lastCanonicalSourceText = ""
                 lastResultSpeakerSource = null
                 lastResultSpeakerTarget = null
                 lastDisplayedSpeakerTarget = null

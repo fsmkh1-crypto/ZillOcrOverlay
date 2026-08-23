@@ -47,6 +47,8 @@ class OpenAiTranslationProvider(
         private set
     @Volatile var lastSpeakerWasCandidate: Boolean = false
         private set
+    @Volatile var lastAliasedText: String = ""
+        private set
 
     override fun translate(japaneseText: String, previousContext: List<String>): String =
         translateInternal(japaneseText, previousContext, bypassCache = false, consumeSticky = true)
@@ -72,6 +74,7 @@ class OpenAiTranslationProvider(
         val glossary = glossarySnapshot()
         val speakers = speakerSnapshot()
         val aliasedText = applyApprovedAlias(japaneseText)
+        lastAliasedText = aliasedText
 
         lastSpeakerSource = null
         lastSpeakerTarget = null
@@ -286,7 +289,9 @@ class OpenAiTranslationProvider(
             glossary.firstOrNull { normalizeSpeakerLabel(it.first) == normalizedFirst }
                 ?.takeIf { isStrongSpeakerCandidate(normalizedFirst) }
                 ?.let { legacy ->
-                    promoteLegacySpeaker(legacy.first, legacy.second)
+                    // 용어집 일치는 화자명 후보의 근거로만 사용한다.
+                    // 사용자 승인 전에는 speaker DB에 영구 저장하지 않는다.
+                    publishPendingSpeaker(legacy.first, legacy.second)
                     if (updateSticky) rememberSpeaker(legacy.first, legacy.second)
                     return DialogueParts(
                         legacy.first,
@@ -336,11 +341,6 @@ class OpenAiTranslationProvider(
 
     private fun normalizeSpeakerLabel(text: String): String =
         text.trim().trim(*SPEAKER_DECORATION_CHARS).trim()
-
-    private fun promoteLegacySpeaker(source: String, target: String) {
-        speakerDao.upsert(SpeakerEntity(source, target, System.currentTimeMillis()))
-        synchronized(speakerLock) { speakerCache = null }
-    }
 
     private fun rememberSpeaker(source: String, target: String) {
         synchronized(stickyLock) {
