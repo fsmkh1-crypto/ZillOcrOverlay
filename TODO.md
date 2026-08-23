@@ -54,20 +54,30 @@
 - [x] 현재 대사에 관련된 용어만 프롬프트에 전달
 - [x] 용어 수정/삭제 시 관련 캐시 선택 무효화
 - [x] 기본 용어 3개 자동 시드
-- [ ] POCO 실기기 영구 캐시 재사용 확인
+- [x] POCO 실기기 API 번역 동작 재확인
 - [ ] 실제 플레이 1시간 캐시 적중률 측정
 
 ## 4단계 · 로컬 LLM
 
-- [ ] Android 로컬 추론 런타임 후보 벤치마크
-- [ ] Qwen 3~4B Q4
-- [ ] Gemma 3~4B Q4
-- [ ] 1024~2048 context
-- [ ] thinking/reasoning 비활성화
-- [ ] API/로컬 전환
+- [x] Android llama.cpp 사전 빌드 AAR 후보 선정
+- [x] `llama-android` CPU/NEON 런타임 Gradle 통합
+- [x] GGUF 파일 선택 및 앱 전용 모델 폴더 복사 UI
+- [x] context 1024 / threads 4 / max output 128 테스트 설정
+- [x] 일본어→한국어 단독 로컬 번역 벤치마크 화면
+- [x] 총 처리시간 / tok/s 표시
+- [ ] TranslateGemma 4B Q4_K_M POCO 실기기 로딩 확인
+- [ ] TranslateGemma 4B Q4_K_M 번역 품질·속도 측정
+- [ ] 로컬 실행 중 RAM / 발열 측정
+- [ ] PPSSPP 동시 실행 프레임 영향 측정
+- [ ] 모델 상주형 `LocalTranslationProvider` 구현
+- [ ] Room 캐시 → 로컬 모델 → 오버레이 연결
+- [ ] API / 로컬 엔진 전환 UI
+- [ ] Qwen 3~4B Q4 비교
+- [ ] 필요 시 TranslateGemma Q3/Q2 또는 2~3B 모델 비교
 
 ## 5단계 · 최적화
 
+- [ ] ROI 픽셀 변화 게이트 추가: 변화 없으면 ML Kit OCR 생략
 - [ ] ROI 복사 시 전체 화면 Bitmap 할당 제거
 - [ ] 재사용 버퍼/Bitmap 검토
 - [ ] OCR 주기 300~700ms 설정화
