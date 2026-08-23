@@ -32,7 +32,7 @@ object LocalModelTester {
             )
             Result(
                 text = completion.text.trim(),
-                tokensPerSecond = completion.tokensPerSecond,
+                tokensPerSecond = completion.tokensPerSecond.toDouble(),
                 elapsedMs = System.currentTimeMillis() - started
             )
         } finally {
