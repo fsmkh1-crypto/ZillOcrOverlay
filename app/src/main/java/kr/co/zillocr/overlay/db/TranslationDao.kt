@@ -22,6 +22,9 @@ interface TranslationDao {
     @Query("SELECT COUNT(*) FROM translations")
     fun count(): Int
 
+    @Query("DELETE FROM translations WHERE instr(sourceText, :term) > 0")
+    fun invalidateContaining(term: String)
+
     @Query("DELETE FROM translations")
     fun clear()
 }
