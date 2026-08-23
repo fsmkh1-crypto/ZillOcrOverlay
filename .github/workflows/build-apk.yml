@@ -69,7 +69,7 @@ jobs:
           - sticky speaker lifecycle and forced-retry behavior
           - in-flight request cancellation races
           - overlay auto-height and manual resize behavior
-          - 5-button primary overlay bar and grouped settings/learning panel usability
+          - primary overlay bar and grouped settings/learning panel usability
           - persistent pending-candidate badge and confirmation-before-save safety
           - correction/approval dialog modality on TYPE_APPLICATION_OVERLAY
           - HTTP/API error handling

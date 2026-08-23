@@ -14,8 +14,8 @@ android {
         applicationId = "kr.co.zillocr.overlay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 21
-        versionName = "0.5.0-alpha8"
+        versionCode = 24
+        versionName = "0.5.0-alpha8.3"
     }
 
     buildTypes {

@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -37,6 +38,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
@@ -100,7 +102,7 @@ class ScreenOcrService : Service() {
     private var controlView: View? = null
     private var selectorView: RegionSelectionView? = null
     private var correctionDialog: AlertDialog? = null
-    private var detailsPanel: LinearLayout? = null
+    private var detailsPanel: View? = null
     private var primaryActions: LinearLayout? = null
     private var gearBadgeView: TextView? = null
     private var speakerApprovalButton: Button? = null
@@ -115,6 +117,8 @@ class ScreenOcrService : Service() {
     private var speakerAlways = false
     private var lastDisplayedSpeakerTarget: String? = null
     @Volatile private var lastRawTranslation = ""
+    @Volatile private var lastCanonicalSourceText = ""
+    @Volatile private var lastResultRequest: TranslationRequest? = null
     @Volatile private var lastResultSpeakerSource: String? = null
     @Volatile private var lastResultSpeakerTarget: String? = null
 
@@ -164,6 +168,43 @@ class ScreenOcrService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post { handleConfigurationChange() }
+    }
+
+    private fun handleConfigurationChange() {
+        val oldWidth = screenWidth
+        val oldHeight = screenHeight
+        val oldDensityDpi = densityDpi
+        val displayedText = resultView?.text?.toString().orEmpty()
+        val resultWasVisible = resultContainer?.visibility != View.GONE
+        val selectionWasActive = selectorView != null
+
+        if (oldWidth > 0 && oldHeight > 0) {
+            resultParams?.let { saveOverlayGeometry(it) }
+        }
+        if (selectionWasActive) endRegionSelection()
+
+        updateScreenMetrics()
+        if (screenWidth == oldWidth && screenHeight == oldHeight && densityDpi == oldDensityDpi) {
+            if (selectionWasActive) beginRegionSelection()
+            return
+        }
+
+        resetOcrStabilityState()
+        if (mediaProjection != null) reconfigureCaptureSurface()
+
+        removeControlOverlay()
+        removeResultOverlay()
+        showControlOverlay()
+        if (displayedText.isNotBlank()) {
+            showResultOverlay(displayedText)
+            if (!resultWasVisible) resultContainer?.visibility = View.GONE
+        }
+        if (selectionWasActive) beginRegionSelection()
+    }
 
     override fun onDestroy() {
         synchronized(translationLock) {
@@ -242,6 +283,36 @@ class ScreenOcrService : Service() {
             }
         }
         densityDpi = resources.configuration.densityDpi
+    }
+
+    private fun reconfigureCaptureSurface() {
+        val projection = mediaProjection ?: return
+        val oldReader = imageReader
+        oldReader?.setOnImageAvailableListener(null, null)
+        virtualDisplay?.setSurface(null)
+        oldReader?.close()
+
+        val newReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2).apply {
+            setOnImageAvailableListener({ reader -> onImageAvailable(reader) }, captureHandler)
+        }
+        imageReader = newReader
+
+        val display = virtualDisplay
+        if (display != null) {
+            display.resize(screenWidth, screenHeight, densityDpi)
+            display.setSurface(newReader.surface)
+        } else {
+            virtualDisplay = projection.createVirtualDisplay(
+                "ZillOcrCapture",
+                screenWidth,
+                screenHeight,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                newReader.surface,
+                null,
+                captureHandler
+            )
+        }
     }
 
     private fun onImageAvailable(reader: ImageReader) {
@@ -389,11 +460,13 @@ class ScreenOcrService : Service() {
                 val speakerTarget = provider.lastSpeakerTarget
                 val explicit = provider.lastSpeakerExplicit
                 val candidate = provider.lastSpeakerWasCandidate
-                lastRawTranslation = translated
-                lastResultSpeakerSource = speakerSource
-                lastResultSpeakerTarget = speakerTarget
                 mainHandler.post {
                     if (lastRecognizedText == request.text) {
+                        lastRawTranslation = translated
+                        lastCanonicalSourceText = provider.lastAliasedText.ifBlank { request.text }
+                        lastResultRequest = request
+                        lastResultSpeakerSource = speakerSource
+                        lastResultSpeakerTarget = speakerTarget
                         showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))
                         showPendingLearningHintIfNeeded()
                     }
@@ -547,13 +620,14 @@ class ScreenOcrService : Service() {
     }
 
     private fun recordPositiveFeedback() {
-        val request = lastTranslationRequest ?: return
+        val request = lastResultRequest ?: return
         if (lastRawTranslation.isBlank()) return
+        val sourceText = lastCanonicalSourceText.ifBlank { request.text }
         val speaker = lastResultSpeakerSource
         learningExecutor.execute {
             AppDatabase.get(this).feedbackDao().insert(
                 FeedbackEntity(
-                    sourceText = request.text,
+                    sourceText = sourceText,
                     model = request.model,
                     rating = 1,
                     category = "good",
@@ -567,7 +641,7 @@ class ScreenOcrService : Service() {
     }
 
     private fun showCorrectionDialog() {
-        val request = lastTranslationRequest ?: return
+        val request = lastResultRequest ?: return
         val current = lastRawTranslation
         if (current.isBlank()) return
         val input = EditText(this).apply {
@@ -593,15 +667,16 @@ class ScreenOcrService : Service() {
 
     private fun saveCorrection(request: TranslationRequest, corrected: String) {
         val speakerSource = lastResultSpeakerSource
+        val sourceText = lastCanonicalSourceText.ifBlank { request.text }
         learningExecutor.execute {
             val db = AppDatabase.get(this)
             val now = System.currentTimeMillis()
             db.translationOverrideDao().upsert(
-                TranslationOverrideEntity(request.text, request.model, corrected, speakerSource, now)
+                TranslationOverrideEntity(sourceText, request.model, corrected, speakerSource, now)
             )
             db.feedbackDao().insert(
                 FeedbackEntity(
-                    sourceText = request.text,
+                    sourceText = sourceText,
                     model = request.model,
                     rating = -1,
                     category = "manual_correction",
@@ -610,7 +685,7 @@ class ScreenOcrService : Service() {
                     createdAt = now
                 )
             )
-            db.translationDao().invalidateContaining(request.text)
+            db.translationDao().invalidateContaining(sourceText)
             OpenAiTranslationProvider.clearMemoryCache()
             lastRawTranslation = corrected
             mainHandler.post {
@@ -642,15 +717,18 @@ class ScreenOcrService : Service() {
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride
         if (pixelStride <= 0 || rowStride <= 0) return null
-        val rowPadding = rowStride - pixelStride * screenWidth
-        val paddedWidth = screenWidth + rowPadding / pixelStride
-        val fullBitmap = Bitmap.createBitmap(paddedWidth, screenHeight, Bitmap.Config.ARGB_8888)
+        val captureWidth = image.width
+        val captureHeight = image.height
+        if (captureWidth <= 0 || captureHeight <= 0) return null
+        val rowPadding = rowStride - pixelStride * captureWidth
+        val paddedWidth = captureWidth + rowPadding / pixelStride
+        val fullBitmap = Bitmap.createBitmap(paddedWidth, captureHeight, Bitmap.Config.ARGB_8888)
         buffer.rewind()
         fullBitmap.copyPixelsFromBuffer(buffer)
-        val left = (normalizedRegion.left * screenWidth).toInt().coerceIn(0, screenWidth - 1)
-        val top = (normalizedRegion.top * screenHeight).toInt().coerceIn(0, screenHeight - 1)
-        val right = (normalizedRegion.right * screenWidth).toInt().coerceIn(left + 1, screenWidth)
-        val bottom = (normalizedRegion.bottom * screenHeight).toInt().coerceIn(top + 1, screenHeight)
+        val left = (normalizedRegion.left * captureWidth).toInt().coerceIn(0, captureWidth - 1)
+        val top = (normalizedRegion.top * captureHeight).toInt().coerceIn(0, captureHeight - 1)
+        val right = (normalizedRegion.right * captureWidth).toInt().coerceIn(left + 1, captureWidth)
+        val bottom = (normalizedRegion.bottom * captureHeight).toInt().coerceIn(top + 1, captureHeight)
         return try {
             Bitmap.createBitmap(fullBitmap, left, top, right - left, bottom - top)
         } finally {
@@ -706,6 +784,10 @@ class ScreenOcrService : Service() {
         primaryBar.addView(menu)
         actions.addView(primaryButton("숨") { toggleResultVisibility() })
         actions.addView(primaryButton("재") { retryLastTranslation() })
+        actions.addView(primaryButton("영역") {
+            detailsPanel?.visibility = View.GONE
+            beginRegionSelection()
+        })
 
         val gearFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(4) }
@@ -744,14 +826,19 @@ class ScreenOcrService : Service() {
         root.addView(primaryBar)
 
         val panelWidth = minOf(dp(240), (screenWidth - dp(16)).coerceAtLeast(dp(190)))
+        val panelMaxHeight = (screenHeight - dp(110)).coerceAtLeast(dp(96))
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xF21C1C22.toInt())
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(panelWidth, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
         }
-        detailsPanel = panel
+        val panelScroll = ScrollView(this).apply {
+            isFillViewport = false
+            visibility = View.GONE
+            addView(panel, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT))
+            layoutParams = LinearLayout.LayoutParams(panelWidth, panelMaxHeight).apply { topMargin = dp(6) }
+        }
+        detailsPanel = panelScroll
 
         fun groupLabel(label: String, learning: Boolean = false): TextView = TextView(this).apply {
             text = label
@@ -806,9 +893,9 @@ class ScreenOcrService : Service() {
         panel.addView(learningGroup, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         panel.addView(groupLabel("세션"))
-        panel.addView(panelButton("OCR 영역 다시 지정") { beginRegionSelection(); panel.visibility = View.GONE })
+        panel.addView(panelButton("OCR 영역 다시 지정") { beginRegionSelection(); panelScroll.visibility = View.GONE })
         panel.addView(panelButton("화자 · 학습 관리 열기") { openLearningManager() })
-        root.addView(panel)
+        root.addView(panelScroll)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -1026,6 +1113,7 @@ class ScreenOcrService : Service() {
                             autoHeightEnabled = false
                             OverlaySettingsStore.saveAutoHeight(this, false)
                             Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
+                            updateControlStateLabels()
                         }
                     }
                     if (resizing) {
@@ -1094,7 +1182,9 @@ class ScreenOcrService : Service() {
                     currentProvider?.cancelInFlight()
                 }
                 lastTranslationRequest = null
+                lastResultRequest = null
                 lastRawTranslation = ""
+                lastCanonicalSourceText = ""
                 lastResultSpeakerSource = null
                 lastResultSpeakerTarget = null
                 lastDisplayedSpeakerTarget = null
@@ -1128,14 +1218,15 @@ class ScreenOcrService : Service() {
         selectingRegion = false
     }
 
-    private fun removeAllOverlays() {
-        selectorView?.let { runCatching { windowManager.removeView(it) } }
+    private fun removeResultOverlay() {
         resultContainer?.let { runCatching { windowManager.removeView(it) } }
-        controlView?.let { runCatching { windowManager.removeView(it) } }
-        selectorView = null
         resultContainer = null
         resultView = null
         resultParams = null
+    }
+
+    private fun removeControlOverlay() {
+        controlView?.let { runCatching { windowManager.removeView(it) } }
         controlView = null
         detailsPanel = null
         primaryActions = null
@@ -1145,6 +1236,14 @@ class ScreenOcrService : Service() {
         autoHeightButton = null
         speakerModeButton = null
         alphaButton = null
+    }
+
+    private fun removeAllOverlays() {
+        selectorView?.let { runCatching { windowManager.removeView(it) } }
+        selectorView = null
+        selectingRegion = false
+        removeResultOverlay()
+        removeControlOverlay()
     }
 
     private fun releaseProjectionResources(stopProjection: Boolean) {
