@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.3 - 2026-08-23
+
+### Fixed
+
+- HyperOS에서 MediaProjection 시작 시 PPSSPP가 앱 선택 목록에 나타나지 않아 캡처를 시작하지 못하던 흐름을 우회
+- Android 14(API 34)+에서 `MediaProjectionConfig.createConfigForDefaultDisplay()`를 사용해 기본 디스플레이 전체 캡처만 요청하도록 변경
+- PPSSPP를 시스템 앱 목록에서 직접 선택하는 절차 제거
+
+### Changed
+
+- 시작 흐름을 `번역 캡처 시작 → 전체 화면 캡처 동의 → PPSSPP 전환 → 영역 지정`으로 단순화
+- 앱 화면 버전 표기 0.2.3 / versionCode 5
+
+### Compatibility
+
+- Android 13 이하에서는 기존 `createScreenCaptureIntent()` 방식 유지
+
+### Validation
+
+- GitHub Actions `assembleDebug` 검증 예정
+- POCO X8 Pro Max + HyperOS에서 전체 화면 캡처 동의창 및 PPSSPP 오버레이 재검증 예정
+
 ## 0.2.2 - 2026-08-23
 
 ### Fixed
@@ -24,7 +46,7 @@
 
 ### Validation
 
-- GitHub Actions `assembleDebug` 검증 예정
+- GitHub Actions `assembleDebug` 성공
 - POCO X8 Pro Max 실기기 깜빡임 재검증 예정
 
 ## 0.2.1 - 2026-08-23
@@ -60,7 +82,7 @@
 - OpenAI Responses API 기반 일본어 → 한국어 번역
 - `TranslationProvider` 추상화
 - 앱 내 API 키 및 모델 설정 UI
-- 직전 일본어 대사 최대 2개를 번역 문맥으로 전달
+- 직전 일본어 대사 최대 2개를 짧은 문맥으로 전달
 - 번역 요청 전용 단일 백그라운드 executor
 - 번역 중 새 OCR 발생 시 오래된 요청을 누적하지 않고 최신 요청 1개만 대기
 - `INTERNET` 권한
