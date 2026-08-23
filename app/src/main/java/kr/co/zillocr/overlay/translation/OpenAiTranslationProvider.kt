@@ -2,6 +2,7 @@ package kr.co.zillocr.overlay.translation
 
 import android.content.Context
 import kr.co.zillocr.overlay.data.AppContextHolder
+import kr.co.zillocr.overlay.data.TranslationSettingsStore
 import kr.co.zillocr.overlay.db.AppDatabase
 import kr.co.zillocr.overlay.db.TranslationEntity
 import org.json.JSONObject
@@ -24,13 +25,15 @@ class OpenAiTranslationProvider(
 
     override fun translate(japaneseText: String, previousContext: List<String>): String {
         require(apiKey.isNotBlank()) { "OpenAI API 키가 없습니다" }
+        val selectedModel = model.ifBlank { DEFAULT_MODEL }
+        val memoryKey = "$selectedModel\u0000$japaneseText"
 
-        synchronized(memoryCache) { memoryCache[japaneseText]?.let { return it } }
+        synchronized(memoryCache) { memoryCache[memoryKey]?.let { return it } }
 
         val now = System.currentTimeMillis()
-        translationDao.find(japaneseText)?.let { cached ->
+        translationDao.find(japaneseText)?.takeIf { it.model == selectedModel }?.let { cached ->
             translationDao.touch(japaneseText, now)
-            synchronized(memoryCache) { memoryCache[japaneseText] = cached.translatedText }
+            synchronized(memoryCache) { memoryCache[memoryKey] = cached.translatedText }
             return cached.translatedText
         }
 
@@ -46,7 +49,7 @@ class OpenAiTranslationProvider(
         var lastEmptyDetail = ""
 
         repeat(MAX_ATTEMPTS) { attempt ->
-            val response = requestTranslation(input)
+            val response = requestTranslation(input, selectedModel)
             if (response.text.isNotBlank() && !response.text.equals("null", ignoreCase = true)) {
                 val translated = response.text.trim()
                 val savedAt = System.currentTimeMillis()
@@ -54,13 +57,13 @@ class OpenAiTranslationProvider(
                     TranslationEntity(
                         sourceText = japaneseText,
                         translatedText = translated,
-                        model = response.model.ifBlank { DEFAULT_MODEL },
+                        model = response.model.ifBlank { selectedModel },
                         createdAt = savedAt,
                         lastUsedAt = savedAt,
                         useCount = 1
                     )
                 )
-                synchronized(memoryCache) { memoryCache[japaneseText] = translated }
+                synchronized(memoryCache) { memoryCache[memoryKey] = translated }
                 return translated
             }
             lastEmptyDetail = buildString {
@@ -94,33 +97,40 @@ class OpenAiTranslationProvider(
         }
         val context = previousContext.takeLast(2)
         if (context.isNotEmpty()) {
-            append("[직전 대사]\n")
+            append("[직전 대사·문맥만 참조]\n")
             append(context.joinToString("\n"))
             append("\n\n")
         }
-        append("[현재 대사]\n")
+        append("[현재 대사·이것만 번역]\n")
         append(japaneseText)
     }
 
-    private fun requestTranslation(input: String): ApiResponse {
-        val selectedModel = model.ifBlank { DEFAULT_MODEL }
+    private fun requestTranslation(input: String, selectedModel: String): ApiResponse {
         val requestBody = JSONObject().apply {
             put("model", selectedModel)
             put("instructions", SYSTEM_INSTRUCTIONS)
             put("input", input)
             put("store", false)
             put("max_output_tokens", 96)
-            put("reasoning", JSONObject().apply { put("effort", "none") })
-            put("text", JSONObject().apply {
-                put("verbosity", "low")
-                put("format", JSONObject().apply { put("type", "text") })
-            })
+
+            if (selectedModel.startsWith("gpt-5.6-") && !selectedModel.endsWith("-pro")) {
+                put("reasoning", JSONObject().apply { put("effort", "none") })
+                put("text", JSONObject().apply {
+                    put("verbosity", "low")
+                    put("format", JSONObject().apply { put("type", "text") })
+                })
+            } else if (selectedModel.startsWith("gpt-5")) {
+                put("text", JSONObject().apply {
+                    put("verbosity", "low")
+                    put("format", JSONObject().apply { put("type", "text") })
+                })
+            }
         }.toString()
 
         val connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 8_000
-            readTimeout = 15_000
+            readTimeout = if (selectedModel.contains("pro")) 45_000 else 15_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $apiKey")
@@ -176,13 +186,13 @@ class OpenAiTranslationProvider(
 
     companion object {
         private const val API_URL = "https://api.openai.com/v1/responses"
-        private const val DEFAULT_MODEL = "gpt-5.6-luna"
+        private const val DEFAULT_MODEL = TranslationSettingsStore.DEFAULT_MODEL
         private const val MAX_CACHE_ENTRIES = 256
         private const val MAX_GLOSSARY_TERMS = 48
         private const val MAX_ATTEMPTS = 2
 
         private const val SYSTEM_INSTRUCTIONS =
-            "일본 판타지 RPG 대사를 자연스러운 한국어로 번역. 의미를 추가하거나 빼지 말고 존댓말/반말, 위계, 거친 말투, 고풍체, 캐릭터 어조를 유지. 일본어에 없는 성별·신분·관계를 추측하지 말 것. 용어집 우선. 직전 대사는 문맥에만 사용. 현재 대사만 한국어 번역문으로 출력."
+            "일본 판타지 RPG 대사를 자연스러운 한국어로 번역한다. 용어집 표기를 최우선으로 따른다. 원문의 의미와 정보량을 보존하고, 존댓말/반말, 사회적 위계, 고풍체, 거친 말투, 캐릭터 말버릇을 문맥상 확인되는 범위에서 유지한다. 원문에 없는 성별·신분·관계·감정·고유명사 정보를 임의로 만들지 않는다. 직전 대사는 현재 대사의 화자 관계와 말투를 판단하는 문맥으로만 사용하고 번역 결과에 포함하지 않는다. 설명, 주석, 따옴표, 원문 재출력 없이 현재 대사의 한국어 번역만 출력한다."
 
         private val memoryCache = object : LinkedHashMap<String, String>(MAX_CACHE_ENTRIES, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =

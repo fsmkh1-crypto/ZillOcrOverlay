@@ -46,6 +46,7 @@ import kr.co.zillocr.overlay.translation.OpenAiTranslationProvider
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
 
 class ScreenOcrService : Service() {
@@ -86,9 +87,8 @@ class ScreenOcrService : Service() {
     private var controlView: View? = null
     private var selectorView: RegionSelectionView? = null
 
-    private var autoPositionEnabled = true
     private var overlayTextSizeSp = 19f
-    private var overlayAlpha = 205
+    private var overlayAlpha = 191
 
     private data class TranslationRequest(
         val text: String,
@@ -194,7 +194,6 @@ class ScreenOcrService : Service() {
             mainHandler.post {
                 showControlOverlay()
                 showResultOverlay("준비됨 · PPSSPP에서 ‘영역’을 눌러 일본어 대화창을 지정하세요")
-                positionResultOutsideRegion()
             }
         } catch (_: SecurityException) {
             stopSelf()
@@ -334,18 +333,12 @@ class ScreenOcrService : Service() {
 
         val settings = TranslationSettingsStore.load(this)
         if (!settings.enabled) {
-            mainHandler.post {
-                showResultOverlay(text)
-                positionResultOutsideRegion()
-            }
+            mainHandler.post { showResultOverlay(text) }
             return
         }
 
         if (settings.apiKey.isBlank()) {
-            mainHandler.post {
-                showResultOverlay("API 키를 앱에서 먼저 입력하세요\n\n$text")
-                positionResultOutsideRegion()
-            }
+            mainHandler.post { showResultOverlay("API 키를 앱에서 먼저 입력하세요\n\n$text") }
             return
         }
 
@@ -390,10 +383,7 @@ class ScreenOcrService : Service() {
                 )
 
                 mainHandler.post {
-                    if (lastRecognizedText == request.text) {
-                        showResultOverlay(translated)
-                        positionResultOutsideRegion()
-                    }
+                    if (lastRecognizedText == request.text) showResultOverlay(translated)
                 }
             } catch (error: Exception) {
                 mainHandler.post {
@@ -403,7 +393,6 @@ class ScreenOcrService : Service() {
                             if (detail.isBlank()) "번역 오류: ${error.javaClass.simpleName}"
                             else "번역 오류: $detail"
                         )
-                        positionResultOutsideRegion()
                     }
                 }
             }
@@ -466,11 +455,6 @@ class ScreenOcrService : Service() {
         }
 
         addButton("영역") { beginRegionSelection() }
-        addButton("자동") {
-            autoPositionEnabled = true
-            OverlaySettingsStore.setAutoPosition(this, true)
-            positionResultOutsideRegion(force = true)
-        }
         addButton("A-") { changeOverlayTextSize(-1f) }
         addButton("A+") { changeOverlayTextSize(1f) }
         addButton("투명") { cycleOverlayAlpha() }
@@ -500,7 +484,6 @@ class ScreenOcrService : Service() {
 
         if (resultContainer == null) {
             val saved = OverlaySettingsStore.load(this)
-            autoPositionEnabled = saved.autoPosition
             overlayTextSizeSp = saved.textSizeSp
             overlayAlpha = saved.backgroundAlpha
 
@@ -535,20 +518,19 @@ class ScreenOcrService : Service() {
                 textSize = overlayTextSizeSp
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8), dp(4), dp(8), dp(6))
-                maxLines = 8
+                maxLines = 12
             }
 
             container.addView(header, LinearLayout.LayoutParams.MATCH_PARENT, dp(26))
-            container.addView(textView, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ))
+            container.addView(
+                textView,
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            )
 
             val width = (screenWidth * saved.widthRatio).toInt()
-                .coerceIn(dp(220), (screenWidth * 0.96f).toInt())
+                .coerceIn(dp(180), (screenWidth * 0.995f).toInt())
             val height = (screenHeight * saved.heightRatio).toInt()
-                .coerceIn(dp(100), (screenHeight * 0.50f).toInt())
+                .coerceIn(dp(80), (screenHeight * 0.92f).toInt())
 
             val params = WindowManager.LayoutParams(
                 width,
@@ -557,6 +539,7 @@ class ScreenOcrService : Service() {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                     WindowManager.LayoutParams.FLAG_SECURE,
                 PixelFormat.TRANSLUCENT
             ).apply {
@@ -599,7 +582,6 @@ class ScreenOcrService : Service() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    autoPositionEnabled = false
                     params.x = startX + (event.rawX - downRawX).toInt()
                     params.y = startY + (event.rawY - downRawY).toInt()
                     clampResultGeometry(params)
@@ -607,7 +589,6 @@ class ScreenOcrService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    autoPositionEnabled = false
                     saveOverlayGeometry(params)
                     true
                 }
@@ -622,10 +603,10 @@ class ScreenOcrService : Service() {
         params: WindowManager.LayoutParams
     ) {
         val density = resources.displayMetrics.density
-        val minWidth = (220 * density).toInt()
-        val minHeight = (100 * density).toInt()
-        val maxWidth = (screenWidth * 0.96f).toInt()
-        val maxHeight = (screenHeight * 0.50f).toInt()
+        val minWidth = (180 * density).toInt()
+        val minHeight = (80 * density).toInt()
+        val maxWidth = (screenWidth * 0.995f).toInt()
+        val maxHeight = (screenHeight * 0.92f).toInt()
 
         var downRawX = 0f
         var downRawY = 0f
@@ -650,7 +631,6 @@ class ScreenOcrService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     saveOverlayGeometry(params)
-                    if (autoPositionEnabled) positionResultOutsideRegion(force = true)
                     true
                 }
                 else -> false
@@ -659,16 +639,22 @@ class ScreenOcrService : Service() {
     }
 
     private fun clampResultGeometry(params: WindowManager.LayoutParams) {
-        params.width = params.width.coerceAtMost(screenWidth)
-        params.height = params.height.coerceAtMost(screenHeight)
-        params.x = params.x.coerceIn(0, max(0, screenWidth - params.width))
-        params.y = params.y.coerceIn(0, max(0, screenHeight - params.height))
+        val density = resources.displayMetrics.density
+        val safety = (48 * density).toInt().coerceAtMost(minOf(screenWidth, screenHeight) / 3)
+        params.width = params.width.coerceIn((180 * density).toInt(), (screenWidth * 0.995f).toInt())
+        params.height = params.height.coerceIn((80 * density).toInt(), (screenHeight * 0.92f).toInt())
+
+        val minX = safety - params.width
+        val maxX = screenWidth - safety
+        val minY = safety - params.height
+        val maxY = screenHeight - safety
+        params.x = params.x.coerceIn(minX, maxX)
+        params.y = params.y.coerceIn(minY, maxY)
     }
 
     private fun saveOverlayGeometry(params: WindowManager.LayoutParams) {
         OverlaySettingsStore.saveGeometry(
             context = this,
-            autoPosition = autoPositionEnabled,
             xRatio = params.x.toFloat() / screenWidth.coerceAtLeast(1),
             yRatio = params.y.toFloat() / screenHeight.coerceAtLeast(1),
             widthRatio = params.width.toFloat() / screenWidth.coerceAtLeast(1),
@@ -683,45 +669,10 @@ class ScreenOcrService : Service() {
     }
 
     private fun cycleOverlayAlpha() {
-        overlayAlpha = when {
-            overlayAlpha > 200 -> 175
-            overlayAlpha > 150 -> 130
-            overlayAlpha > 105 -> 90
-            else -> 220
-        }
+        val index = ALPHA_LEVELS.indices.minByOrNull { abs(ALPHA_LEVELS[it] - overlayAlpha) } ?: 0
+        overlayAlpha = ALPHA_LEVELS[(index + 1) % ALPHA_LEVELS.size]
         resultContainer?.setBackgroundColor(Color.argb(overlayAlpha, 0, 0, 0))
         OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)
-    }
-
-    private fun positionResultOutsideRegion(force: Boolean = false) {
-        if (!autoPositionEnabled && !force) return
-        val region = ocrRegion ?: return
-        val params = resultParams ?: return
-        val container = resultContainer ?: return
-
-        val density = resources.displayMetrics.density
-        val margin = (12 * density).toInt()
-        val regionTop = (region.top * screenHeight).toInt()
-        val regionBottom = (region.bottom * screenHeight).toInt()
-        val spaceAbove = regionTop - margin
-        val spaceBelow = screenHeight - regionBottom - margin
-        val height = params.height
-
-        val targetY = when {
-            spaceAbove >= height && spaceBelow >= height -> {
-                if (region.top >= 0.5f) regionTop - height - margin else regionBottom + margin
-            }
-            spaceAbove >= height -> regionTop - height - margin
-            spaceBelow >= height -> regionBottom + margin
-            spaceAbove >= spaceBelow -> regionTop - height - margin
-            else -> regionBottom + margin
-        }
-
-        params.x = margin
-        params.y = targetY
-        clampResultGeometry(params)
-        windowManager.updateViewLayout(container, params)
-        saveOverlayGeometry(params)
     }
 
     private fun beginRegionSelection() {
@@ -738,7 +689,6 @@ class ScreenOcrService : Service() {
                 synchronized(translationLock) { pendingTranslation = null }
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")
-                positionResultOutsideRegion(force = autoPositionEnabled)
             },
             onCancelled = { endRegionSelection() }
         )
@@ -778,6 +728,7 @@ class ScreenOcrService : Service() {
         selectorView = null
         resultContainer = null
         resultView = null
+        resultParams = null
         controlView = null
     }
 
@@ -858,6 +809,7 @@ class ScreenOcrService : Service() {
         private const val SAME_TEXT_SIMILARITY = 0.92
         private const val CANDIDATE_SIMILARITY = 0.90
         private const val OCR_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
+        private val ALPHA_LEVELS = intArrayOf(255, 191, 128, 64, 26, 0)
         private const val NOTIFICATION_CHANNEL_ID = "zill_ocr_capture"
         private const val NOTIFICATION_ID = 1001
     }
