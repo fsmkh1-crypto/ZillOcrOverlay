@@ -80,8 +80,8 @@ class LearningManagerActivity : ComponentActivity() {
     }
 
     private fun buildCandidateInbox(
-        speakerCandidates: List<OpenAiTranslationProvider.PendingSpeakerCandidate>,
-        aliasCandidates: List<OpenAiTranslationProvider.PendingAliasCandidate>
+        speakerCandidates: List<OpenAiTranslationProvider.Companion.PendingSpeakerCandidate>,
+        aliasCandidates: List<OpenAiTranslationProvider.Companion.PendingAliasCandidate>
     ) {
         addSection("학습 후보함 · ${speakerCandidates.size + aliasCandidates.size}개")
         if (speakerCandidates.isEmpty() && aliasCandidates.isEmpty()) {
@@ -212,7 +212,7 @@ class LearningManagerActivity : ComponentActivity() {
         }
     }
 
-    private fun showSpeakerCandidateEdit(candidate: OpenAiTranslationProvider.PendingSpeakerCandidate) {
+    private fun showSpeakerCandidateEdit(candidate: OpenAiTranslationProvider.Companion.PendingSpeakerCandidate) {
         val input = EditText(this).apply {
             setText(candidate.suggestedTarget)
             selectAll()
@@ -230,7 +230,7 @@ class LearningManagerActivity : ComponentActivity() {
             .show()
     }
 
-    private fun showAliasCandidateEdit(candidate: OpenAiTranslationProvider.PendingAliasCandidate) {
+    private fun showAliasCandidateEdit(candidate: OpenAiTranslationProvider.Companion.PendingAliasCandidate) {
         val input = EditText(this).apply {
             setText(candidate.canonical)
             selectAll()
