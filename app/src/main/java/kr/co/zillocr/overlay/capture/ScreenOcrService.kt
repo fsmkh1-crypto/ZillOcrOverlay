@@ -459,7 +459,6 @@ class ScreenOcrService : Service() {
             container.addView(Button(this).apply {
                 text = label
                 textSize = 11f
-                minHeight = dp(34)
                 minimumHeight = dp(34)
                 setPadding(dp(4), 0, dp(4), 0)
                 setOnClickListener { action() }
@@ -516,13 +515,13 @@ class ScreenOcrService : Service() {
                 gravity = Gravity.CENTER_VERTICAL
             }
             val dragHandle = TextView(this).apply {
-                text = "≡ 이동"
+                this.text = "≡ 이동"
                 setTextColor(0xFFDDDDDD.toInt())
                 textSize = 11f
                 setPadding(dp(6), dp(2), dp(6), dp(2))
             }
             val resizeHandle = TextView(this).apply {
-                text = "↘ 크기"
+                this.text = "↘ 크기"
                 setTextColor(0xFFDDDDDD.toInt())
                 textSize = 11f
                 gravity = Gravity.END
