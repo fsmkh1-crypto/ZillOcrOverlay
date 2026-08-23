@@ -10,6 +10,9 @@ interface GlossaryDao {
     @Query("SELECT * FROM glossary ORDER BY sourceTerm COLLATE NOCASE ASC")
     fun all(): List<GlossaryEntity>
 
+    @Query("SELECT COUNT(*) FROM glossary")
+    fun count(): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun upsert(entity: GlossaryEntity)
 
