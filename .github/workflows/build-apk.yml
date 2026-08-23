@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -18,6 +18,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Apply alpha8.3 rotation patch
+        run: |
+          if grep -q '0.5.0-alpha8.3' app/build.gradle.kts; then
+            echo 'alpha8.3 patch already applied'
+          else
+            python3 tools/apply_alpha8_3_rotation_patch.py
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app/src/main/java/kr/co/zillocr/overlay/capture/ScreenOcrService.kt app/build.gradle.kts
+            git commit -m 'Handle overlay and capture rotation changes'
+            git push origin HEAD:${{ github.head_ref }}
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
