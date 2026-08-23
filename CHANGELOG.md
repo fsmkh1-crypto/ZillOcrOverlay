@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0-alpha4.1 - 2026-08-23
+
+### Fixed
+
+- Qwen3 1.7B가 `<think>` 영어 추론만 생성하고 64-token 한도 내에서 한국어 최종 번역에 도달하지 못하던 벤치 문제 수정
+- Qwen3 슬롯의 COMPACT 프롬프트 끝에 `/no_think`를 강제로 추가
+- 결과 화면과 버튼에 Qwen3 non-thinking 적용 여부 표시
+
+### Validation target
+
+- alpha4 Qwen3 1.7B Q4_K_M: 평균 4.10초, prompt eval 1296 ms, generate 2779 ms, 23.03 tok/s였으나 출력이 reasoning으로 소진됨
+- alpha4.1에서 동일 모델이 한국어 최종 번역을 직접 출력하는지와 실제 순수 번역 시간을 재측정
+- 다른 3개 모델의 벤치 동작은 변경하지 않음
+
+### Changed
+
+- 버전 0.4.0-alpha4.1 / versionCode 12
+
 ## 0.4.0-alpha4 - 2026-08-23
 
 ### Added

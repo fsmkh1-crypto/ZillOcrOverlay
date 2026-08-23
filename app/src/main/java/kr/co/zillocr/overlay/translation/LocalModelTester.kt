@@ -27,7 +27,8 @@ object LocalModelTester {
         val loadMs: Long,
         val reusedLoadedModel: Boolean,
         val threads: Int,
-        val promptMode: PromptMode
+        val promptMode: PromptMode,
+        val thinkingDisabled: Boolean
     )
 
     private val mutex = Mutex()
@@ -62,7 +63,8 @@ object LocalModelTester {
         modelPath: String,
         japaneseText: String,
         threads: Int,
-        promptMode: PromptMode
+        promptMode: PromptMode,
+        disableThinking: Boolean = false
     ): Result = mutex.withLock {
         require(modelPath.isNotBlank()) { "로컬 GGUF 모델을 먼저 선택하세요" }
         require(japaneseText.isNotBlank()) { "테스트할 일본어 문장을 입력하세요" }
@@ -87,11 +89,19 @@ object LocalModelTester {
         val systemPrompt: String
         when (promptMode) {
             PromptMode.BASELINE -> {
-                prompt = japaneseText
+                prompt = if (disableThinking) {
+                    "$japaneseText\n/no_think"
+                } else {
+                    japaneseText
+                }
                 systemPrompt = "Translate Japanese fantasy RPG dialogue into natural Korean. Output only the Korean translation. Do not explain."
             }
             PromptMode.COMPACT -> {
-                prompt = "Japanese to Korean translation. Output Korean only.\n$japaneseText"
+                prompt = if (disableThinking) {
+                    "Japanese to Korean translation. Output Korean only.\n$japaneseText\n/no_think"
+                } else {
+                    "Japanese to Korean translation. Output Korean only.\n$japaneseText"
+                }
                 systemPrompt = ""
             }
         }
@@ -114,7 +124,8 @@ object LocalModelTester {
             loadMs = loadMs,
             reusedLoadedModel = reused,
             threads = threads,
-            promptMode = promptMode
+            promptMode = promptMode,
+            thinkingDisabled = disableThinking
         )
     }
 
