@@ -14,8 +14,19 @@
         android:theme="@style/Theme.ZillOcrOverlay">
 
         <activity
+            android:name=".LocalModelActivity"
+            android:exported="true"
+            android:label="질올 로컬 모델 테스트">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:label="질올 OCR 오버레이">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
