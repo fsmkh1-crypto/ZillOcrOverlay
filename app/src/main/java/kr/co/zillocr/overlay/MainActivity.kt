@@ -174,7 +174,7 @@ class MainActivity : ComponentActivity() {
         root.addView(Button(this).apply {
             text = "화자 · 학습 관리"
             setOnClickListener {
-                startActivity(Intent(this@MainActivity, SpeakerLearningManagerActivity::class.java))
+                startActivity(Intent(this@MainActivity, LearningManagerActivity::class.java))
             }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
