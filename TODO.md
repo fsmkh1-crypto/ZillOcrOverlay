@@ -68,11 +68,15 @@
 - [x] TranslateGemma 4B Q4_K_M POCO 실기기 로딩 성공
 - [x] TranslateGemma 4B Q4_K_M 번역 품질 1차 확인
 - [x] alpha1 총 8.93초 / 9.49초, 8.54 / 7.60 tok/s 측정
-- [x] 모델 상주 재사용 구조(alpha2 벤치) 구현
-- [x] 최초 로딩 시간과 순수 번역 시간 분리 계측
-- [x] temperature 0 / greedy 고정으로 결과 일관성 강화
-- [ ] alpha2 POCO 실기기 순수 번역 시간 3~5회 측정
-- [ ] 로컬 실행 중 RAM / 발열 측정
+- [x] 모델 상주 재사용 구조(alpha2) 구현
+- [x] alpha2 순수 번역 8.13 / 8.99 / 8.77초 측정
+- [x] alpha2 prompt eval 4.33~5.07초 / generate 3.79~3.92초 병목 확인
+- [x] temperature 0 / greedy 고정으로 동일 문장 결과 일관성 확인
+- [x] alpha3 기존/짧은 프롬프트 비교 기능 구현
+- [x] alpha3 CPU 4스레드 / 6스레드 비교 기능 구현
+- [ ] alpha3 POCO 실기기 프롬프트별 2회 이상 측정
+- [ ] alpha3 4스레드 / 6스레드 성능·발열 비교
+- [ ] 로컬 실행 중 RAM 측정
 - [ ] PPSSPP 동시 실행 프레임 영향 측정
 - [ ] 실시간용 `LocalTranslationProvider` 구현
 - [ ] Room 캐시 → 로컬 모델 → 오버레이 연결
