@@ -8,14 +8,26 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [TranslationEntity::class, GlossaryEntity::class, SpeakerEntity::class],
-    version = 3,
+    entities = [
+        TranslationEntity::class,
+        GlossaryEntity::class,
+        SpeakerEntity::class,
+        TranslationOverrideEntity::class,
+        FeedbackEntity::class,
+        OcrAliasEntity::class,
+        SpeakerStyleEntity::class
+    ],
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun translationDao(): TranslationDao
     abstract fun glossaryDao(): GlossaryDao
     abstract fun speakerDao(): SpeakerDao
+    abstract fun translationOverrideDao(): TranslationOverrideDao
+    abstract fun feedbackDao(): FeedbackDao
+    abstract fun ocrAliasDao(): OcrAliasDao
+    abstract fun speakerStyleDao(): SpeakerStyleDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -63,13 +75,64 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `translation_overrides` (
+                        `sourceText` TEXT NOT NULL,
+                        `model` TEXT NOT NULL,
+                        `correctedText` TEXT NOT NULL,
+                        `speakerSource` TEXT,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sourceText`, `model`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `translation_feedback` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sourceText` TEXT NOT NULL,
+                        `model` TEXT NOT NULL,
+                        `rating` INTEGER NOT NULL,
+                        `category` TEXT,
+                        `correctedText` TEXT,
+                        `speakerSource` TEXT,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `ocr_aliases` (
+                        `observedText` TEXT NOT NULL,
+                        `canonicalText` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`observedText`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `speaker_styles` (
+                        `sourceName` TEXT NOT NULL,
+                        `styleNote` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sourceName`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "zill_overlay.db"
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
         }
