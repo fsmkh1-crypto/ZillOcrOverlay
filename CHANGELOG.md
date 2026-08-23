@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.0-alpha1 - 2026-08-23
+
+### Added
+
+- Android용 사전 빌드 llama.cpp AAR (`llama-android`) 통합
+- 로컬 GGUF 파일 선택 UI
+- 선택 GGUF를 앱 전용 `models/local-model.gguf`로 복사
+- `LocalModelActivity` 독립 벤치마크 화면
+- `LocalModelTester` 일본어→한국어 단독 추론
+- context 1024 / CPU threads 4 / maxTokens 128 초기 설정
+- 총 처리시간 및 생성 속도(tok/s) 표시
+- OOM 오류 안내 및 앱 내부 모델 삭제 기능
+- `TranslationSettingsStore`에 engine/localModelPath 예약 필드 추가
+
+### Design
+
+- 안정적으로 동작 중인 API 실시간 경로와 로컬 벤치마크를 분리
+- 4B Q4가 POCO X8 Pro Max에서 실사용 가능한지 측정한 뒤에만 PPSSPP 실시간 파이프라인에 연결
+- 최종 실시간 구조에서는 모델을 문장마다 재로딩하지 않고 서비스 생명주기 동안 상주시킬 예정
+
+### Validation
+
+- llama.cpp/ggml Android arm64 네이티브 라이브러리 패키징 확인
+- 최초 CI에서 `tokensPerSecond` Float/Double 타입 불일치 발견 후 수정
+- 최종 `assembleDebug` 재검증 진행
+- TranslateGemma 4B Q4_K_M POCO 실기기 벤치마크 예정
+
+## 0.3.1 - 2026-08-23
+
+### Fixed
+
+- `openrouter/free`가 reasoning 필수 모델로 라우팅될 때 `reasoning=false` 때문에 요청이 거절되던 문제 수정
+- OpenRouter 요청에서 reasoning 강제 비활성화 옵션 제거
+
+### Validation
+
+- GitHub Actions `assembleDebug` 성공
+
 ## 0.3.0 - 2026-08-23
 
 ### Added
@@ -24,7 +62,7 @@
 
 - Room/KSP 포함 GitHub Actions `assembleDebug` 성공
 - debug APK artifact 업로드 성공
-- POCO X8 Pro Max 실기기 영구 캐시/용어집 검증 예정
+- POCO X8 Pro Max 실기기 API 번역 동작 확인
 
 ## 0.2.3 - 2026-08-23
 
@@ -61,7 +99,6 @@
 ### Changed
 
 - OpenRouter 빈 응답 1회 자동 재시도
-- reasoning 비활성화 옵션 추가
 - 버전 0.2.2 / versionCode 4
 
 ### Validation
