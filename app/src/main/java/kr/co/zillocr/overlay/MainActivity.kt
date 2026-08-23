@@ -112,12 +112,12 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha4"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha5"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "OCR → 캐시 → 용어집/직전 문맥 → 선택한 OpenAI 모델 → 오버레이"
+            text = "OCR → 문맥/화자 → 캐시/용어집 → 선택한 OpenAI 모델 → 오버레이"
             textSize = 15f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -189,13 +189,13 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ API 키는 Android Keystore로 보호해 저장합니다. 같은 일본어 원문은 같은 모델의 Room 캐시에서 재사용하며, 용어집 수정 시 관련 캐시는 자동 무효화합니다."
+            text = "※ API 키는 Android Keystore로 보호해 저장합니다. 긴 대사는 같은 모델의 Room 캐시를 재사용하고, 짧고 문맥 의존적인 대사는 직전 문맥을 반영하기 위해 원문 단독 캐시를 우회합니다. 용어집 완전 일치 항목은 API 없이 즉시 반환합니다."
             textSize = 12f
             setPadding(0, dp(6), 0, dp(10))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ 번역창: ‘≡ 이동’을 드래그해 거의 화면 전체 범위로 이동하고, ‘↘ 크기’를 드래그해 거의 전체 화면까지 확대할 수 있습니다. A-/A+는 글자 크기, ‘투명’은 100/75/50/25/10/0% 순으로 배경만 조절합니다. 0%에서도 글자는 그대로 보입니다."
+            text = "※ 번역창: ‘≡ 이동’과 ‘↘ 크기’로 위치/크기를 조절합니다. 우측 제어창은 ☰ 하나만 기본 표시되고 누르면 영역/A-/A+/투명/중지 버튼이 작게 펼쳐집니다. ‘투’는 100/75/50/25/10/0% 순으로 배경만 조절하며 0%에서도 글자는 보입니다."
             textSize = 12f
             setPadding(0, 0, 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: OpenAI 키 입력·모델 선택·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
+            text = "사용: OpenAI 키 입력·모델 선택·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ☰ → 영역 → 대화창(가능하면 화자명 포함) 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
