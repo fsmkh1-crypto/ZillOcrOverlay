@@ -7,14 +7,14 @@ import androidx.room.Query
 
 @Dao
 interface TranslationDao {
-    @Query("SELECT * FROM translations WHERE sourceText = :sourceText LIMIT 1")
-    fun find(sourceText: String): TranslationEntity?
+    @Query("SELECT * FROM translations WHERE sourceText = :sourceText AND model = :model LIMIT 1")
+    fun find(sourceText: String, model: String): TranslationEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun upsert(entity: TranslationEntity)
 
-    @Query("UPDATE translations SET lastUsedAt = :lastUsedAt, useCount = useCount + 1 WHERE sourceText = :sourceText")
-    fun touch(sourceText: String, lastUsedAt: Long)
+    @Query("UPDATE translations SET lastUsedAt = :lastUsedAt, useCount = useCount + 1 WHERE sourceText = :sourceText AND model = :model")
+    fun touch(sourceText: String, model: String, lastUsedAt: Long)
 
     @Query("SELECT * FROM translations ORDER BY lastUsedAt DESC LIMIT :limit")
     fun recent(limit: Int): List<TranslationEntity>
