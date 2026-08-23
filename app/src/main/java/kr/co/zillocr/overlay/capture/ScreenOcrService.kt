@@ -764,7 +764,7 @@ class ScreenOcrService : Service() {
         val panelScroll = ScrollView(this).apply {
             isFillViewport = false
             visibility = View.GONE
-            addView(panel, ScrollView.LayoutParams(panelWidth, ScrollView.LayoutParams.WRAP_CONTENT))
+            addView(panel, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT))
             layoutParams = LinearLayout.LayoutParams(panelWidth, panelMaxHeight).apply { topMargin = dp(6) }
         }
         detailsPanel = panelScroll
