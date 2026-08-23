@@ -30,15 +30,27 @@ class OpenAiTranslationProvider(
 
         exactGlossaryMatch(japaneseText, glossary)?.let { return it }
 
-        val contextSensitive = isContextSensitive(japaneseText)
-        val memoryKey = buildMemoryKey(selectedModel, japaneseText, previousContext, contextSensitive)
+        val currentParts = splitSpeakerAndDialogue(
+            text = japaneseText,
+            glossary = glossary,
+            updateSticky = true,
+            allowSticky = true
+        )
+        val contextSensitive = isContextSensitive(currentParts.dialogue)
+        val memoryKey = buildMemoryKey(
+            selectedModel = selectedModel,
+            japaneseText = japaneseText,
+            previousContext = previousContext,
+            contextSensitive = contextSensitive,
+            speakerSource = currentParts.speakerSource
+        )
 
         synchronized(memoryCache) { memoryCache[memoryKey]?.let { return it } }
 
         if (!contextSensitive) {
             val now = System.currentTimeMillis()
-            translationDao.find(japaneseText)?.takeIf { it.model == selectedModel }?.let { cached ->
-                translationDao.touch(japaneseText, now)
+            translationDao.find(japaneseText, selectedModel)?.let { cached ->
+                translationDao.touch(japaneseText, selectedModel, now)
                 synchronized(memoryCache) { memoryCache[memoryKey] = cached.translatedText }
                 return cached.translatedText
             }
@@ -52,11 +64,31 @@ class OpenAiTranslationProvider(
             .take(MAX_GLOSSARY_TERMS)
             .toList()
 
-        val input = buildInput(japaneseText, previousContext, relevantGlossary, glossary)
-        var lastEmptyDetail = ""
+        val input = buildInput(
+            currentParts = currentParts,
+            previousContext = previousContext,
+            glossary = relevantGlossary,
+            fullGlossary = glossary
+        )
+
+        var lastDetail = ""
+        var maxTokens = DEFAULT_MAX_OUTPUT_TOKENS
 
         repeat(MAX_ATTEMPTS) { attempt ->
-            val response = requestTranslation(input, selectedModel)
+            val response = requestTranslation(input, selectedModel, maxTokens)
+
+            if (response.status == "incomplete") {
+                lastDetail = buildString {
+                    append("번역 응답이 잘렸습니다")
+                    response.incompleteReason.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                }
+                if (attempt + 1 < MAX_ATTEMPTS && response.incompleteReason == "max_output_tokens") {
+                    maxTokens = RETRY_MAX_OUTPUT_TOKENS
+                    return@repeat
+                }
+                throw IllegalStateException(lastDetail)
+            }
+
             if (response.text.isNotBlank() && !response.text.equals("null", ignoreCase = true)) {
                 val translated = response.text.trim()
                 val savedAt = System.currentTimeMillis()
@@ -66,7 +98,7 @@ class OpenAiTranslationProvider(
                         TranslationEntity(
                             sourceText = japaneseText,
                             translatedText = translated,
-                            model = response.model.ifBlank { selectedModel },
+                            model = selectedModel,
                             createdAt = savedAt,
                             lastUsedAt = savedAt,
                             useCount = 1
@@ -77,14 +109,16 @@ class OpenAiTranslationProvider(
                 synchronized(memoryCache) { memoryCache[memoryKey] = translated }
                 return translated
             }
-            lastEmptyDetail = buildString {
+
+            lastDetail = buildString {
                 append("빈 응답")
                 response.model.takeIf { it.isNotBlank() }?.let { append(" · model=$it") }
                 response.status.takeIf { it.isNotBlank() }?.let { append(" · status=$it") }
                 if (attempt + 1 < MAX_ATTEMPTS) append(" · 재시도 중")
             }
         }
-        throw IllegalStateException(lastEmptyDetail.ifBlank { "OpenAI 번역 결과가 비어 있습니다" })
+
+        throw IllegalStateException(lastDetail.ifBlank { "OpenAI 번역 결과가 비어 있습니다" })
     }
 
     private fun glossarySnapshot(): List<Pair<String, String>> {
@@ -108,31 +142,75 @@ class OpenAiTranslationProvider(
     private data class DialogueParts(
         val speakerSource: String?,
         val speakerTarget: String?,
-        val dialogue: String
+        val dialogue: String,
+        val explicitSpeaker: Boolean
+    )
+
+    private data class SpeakerMemory(
+        val source: String,
+        val target: String,
+        val updatedAt: Long
     )
 
     private fun splitSpeakerAndDialogue(
         text: String,
-        glossary: List<Pair<String, String>>
+        glossary: List<Pair<String, String>>,
+        updateSticky: Boolean,
+        allowSticky: Boolean
     ): DialogueParts {
         val lines = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        if (lines.size < 2) return DialogueParts(null, null, text.trim())
+        val rawFirst = lines.firstOrNull().orEmpty()
+        val normalizedFirst = normalizeSpeakerLabel(rawFirst)
 
-        val first = lines.first()
-        val speakerTarget = glossary.firstOrNull { it.first == first }?.second
-        val likelySpeaker = speakerTarget != null &&
-            first.length <= MAX_SPEAKER_CHARS &&
-            first.none { it in SPEAKER_REJECT_PUNCTUATION }
+        if (lines.size >= 2 && normalizedFirst.isNotEmpty()) {
+            val speakerEntry = glossary.firstOrNull { normalizeSpeakerLabel(it.first) == normalizedFirst }
+            val likelySpeaker = speakerEntry != null &&
+                normalizedFirst.length <= MAX_SPEAKER_CHARS &&
+                normalizedFirst.any { it in KATAKANA_RANGE }
 
-        return if (likelySpeaker) {
-            DialogueParts(first, speakerTarget, lines.drop(1).joinToString("\n"))
+            if (likelySpeaker && speakerEntry != null) {
+                if (updateSticky) rememberSpeaker(speakerEntry.first, speakerEntry.second)
+                return DialogueParts(
+                    speakerSource = speakerEntry.first,
+                    speakerTarget = speakerEntry.second,
+                    dialogue = lines.drop(1).joinToString("\n"),
+                    explicitSpeaker = true
+                )
+            }
+        }
+
+        val sticky = if (allowSticky) currentStickySpeaker() else null
+        return DialogueParts(
+            speakerSource = sticky?.source,
+            speakerTarget = sticky?.target,
+            dialogue = text.trim(),
+            explicitSpeaker = false
+        )
+    }
+
+    private fun normalizeSpeakerLabel(text: String): String = text
+        .trim()
+        .trim(*SPEAKER_DECORATION_CHARS)
+        .trim()
+
+    private fun rememberSpeaker(source: String, target: String) {
+        synchronized(speakerLock) {
+            stickySpeaker = SpeakerMemory(source, target, System.currentTimeMillis())
+        }
+    }
+
+    private fun currentStickySpeaker(): SpeakerMemory? = synchronized(speakerLock) {
+        val current = stickySpeaker ?: return@synchronized null
+        if (System.currentTimeMillis() - current.updatedAt > STICKY_SPEAKER_TTL_MS) {
+            stickySpeaker = null
+            null
         } else {
-            DialogueParts(null, null, text.trim())
+            current
         }
     }
 
     private fun buildInput(
-        japaneseText: String,
+        currentParts: DialogueParts,
         previousContext: List<String>,
         glossary: List<Pair<String, String>>,
         fullGlossary: List<Pair<String, String>>
@@ -147,7 +225,12 @@ class OpenAiTranslationProvider(
         if (context.isNotEmpty()) {
             append("[직전 대사·문맥만 참조]\n")
             context.forEach { previous ->
-                val parts = splitSpeakerAndDialogue(previous, fullGlossary)
+                val parts = splitSpeakerAndDialogue(
+                    text = previous,
+                    glossary = fullGlossary,
+                    updateSticky = false,
+                    allowSticky = false
+                )
                 if (parts.speakerSource != null) {
                     append("화자 ").append(parts.speakerSource)
                     parts.speakerTarget?.let { append("(").append(it).append(")") }
@@ -159,25 +242,20 @@ class OpenAiTranslationProvider(
             append('\n')
         }
 
-        val current = splitSpeakerAndDialogue(japaneseText, fullGlossary)
         append("[현재 대사·이것만 번역]\n")
-        if (current.speakerSource != null) {
-            append("화자: ").append(current.speakerSource)
-            current.speakerTarget?.let { append("(").append(it).append(")") }
+        if (currentParts.speakerSource != null) {
+            append("화자: ").append(currentParts.speakerSource)
+            currentParts.speakerTarget?.let { append("(").append(it).append(")") }
+            if (!currentParts.explicitSpeaker) append(" [직전 화자 유지]")
             append('\n')
-            append("대사: ").append(current.dialogue)
+            append("대사: ").append(currentParts.dialogue)
         } else {
-            append(japaneseText)
+            append(currentParts.dialogue)
         }
     }
 
-    private fun isContextSensitive(japaneseText: String): Boolean {
-        val compact = japaneseText
-            .lineSequence()
-            .drop(1)
-            .joinToString("")
-            .ifBlank { japaneseText }
-            .filterNot { it.isWhitespace() || it in CACHE_IGNORED_PUNCTUATION }
+    private fun isContextSensitive(dialogue: String): Boolean {
+        val compact = dialogue.filterNot { it.isWhitespace() || it in CACHE_IGNORED_PUNCTUATION }
         return compact.length <= CONTEXT_SENSITIVE_MAX_CHARS
     }
 
@@ -185,20 +263,25 @@ class OpenAiTranslationProvider(
         selectedModel: String,
         japaneseText: String,
         previousContext: List<String>,
-        contextSensitive: Boolean
+        contextSensitive: Boolean,
+        speakerSource: String?
     ): String {
         if (!contextSensitive) return "$selectedModel\u0000$japaneseText"
         val contextKey = previousContext.takeLast(2).joinToString("\u0001")
-        return "$selectedModel\u0000$japaneseText\u0000$contextKey"
+        return "$selectedModel\u0000${speakerSource.orEmpty()}\u0000$japaneseText\u0000$contextKey"
     }
 
-    private fun requestTranslation(input: String, selectedModel: String): ApiResponse {
+    private fun requestTranslation(
+        input: String,
+        selectedModel: String,
+        maxOutputTokens: Int
+    ): ApiResponse {
         val requestBody = JSONObject().apply {
             put("model", selectedModel)
             put("instructions", SYSTEM_INSTRUCTIONS)
             put("input", input)
             put("store", false)
-            put("max_output_tokens", 96)
+            put("max_output_tokens", maxOutputTokens)
 
             if (selectedModel.startsWith("gpt-5.6-") && !selectedModel.endsWith("-pro")) {
                 put("reasoning", JSONObject().apply { put("effort", "none") })
@@ -249,11 +332,15 @@ class OpenAiTranslationProvider(
         val root = JSONObject(responseText)
         val responseModel = root.optString("model", "")
         val status = root.optString("status", "")
+        val incompleteReason = root.optJSONObject("incomplete_details")?.optString("reason", "").orEmpty()
 
         val direct = root.optString("output_text", "")
-        if (direct.isNotBlank()) return ApiResponse(direct.trim(), responseModel, status)
+        if (direct.isNotBlank()) {
+            return ApiResponse(direct.trim(), responseModel, status, incompleteReason)
+        }
 
-        val output = root.optJSONArray("output") ?: return ApiResponse("", responseModel, status)
+        val output = root.optJSONArray("output")
+            ?: return ApiResponse("", responseModel, status, incompleteReason)
         val parts = mutableListOf<String>()
         for (i in 0 until output.length()) {
             val item = output.optJSONObject(i) ?: continue
@@ -266,10 +353,15 @@ class OpenAiTranslationProvider(
                 if (text.isNotBlank()) parts += text
             }
         }
-        return ApiResponse(parts.joinToString("\n").trim(), responseModel, status)
+        return ApiResponse(parts.joinToString("\n").trim(), responseModel, status, incompleteReason)
     }
 
-    private data class ApiResponse(val text: String, val model: String, val status: String)
+    private data class ApiResponse(
+        val text: String,
+        val model: String,
+        val status: String,
+        val incompleteReason: String
+    )
 
     companion object {
         private const val API_URL = "https://api.openai.com/v1/responses"
@@ -277,9 +369,16 @@ class OpenAiTranslationProvider(
         private const val MAX_CACHE_ENTRIES = 256
         private const val MAX_GLOSSARY_TERMS = 48
         private const val MAX_ATTEMPTS = 2
-        private const val CONTEXT_SENSITIVE_MAX_CHARS = 12
+        private const val DEFAULT_MAX_OUTPUT_TOKENS = 96
+        private const val RETRY_MAX_OUTPUT_TOKENS = 160
+        private const val CONTEXT_SENSITIVE_MAX_CHARS = 20
         private const val MAX_SPEAKER_CHARS = 24
-        private const val SPEAKER_REJECT_PUNCTUATION = "。！？!?、,:：;；「」『』()（）[]【】"
+        private const val STICKY_SPEAKER_TTL_MS = 90_000L
+        private val KATAKANA_RANGE = '\u30A0'..'\u30FF'
+        private val SPEAKER_DECORATION_CHARS = charArrayOf(
+            '「', '」', '『', '』', '(', ')', '（', '）', '[', ']', '【', '】',
+            ':', '：', '・', ' ', '\t'
+        )
         private const val CACHE_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
 
         private const val SYSTEM_INSTRUCTIONS =
@@ -293,9 +392,17 @@ class OpenAiTranslationProvider(
         private val glossaryLock = Any()
         @Volatile private var glossaryCache: List<Pair<String, String>>? = null
 
+        private val speakerLock = Any()
+        @Volatile private var stickySpeaker: SpeakerMemory? = null
+
         fun clearMemoryCache() {
             synchronized(memoryCache) { memoryCache.clear() }
             synchronized(glossaryLock) { glossaryCache = null }
+            synchronized(speakerLock) { stickySpeaker = null }
+        }
+
+        fun clearDialogueContext() {
+            synchronized(speakerLock) { stickySpeaker = null }
         }
     }
 }

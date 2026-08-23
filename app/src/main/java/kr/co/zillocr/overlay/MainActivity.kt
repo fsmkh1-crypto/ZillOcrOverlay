@@ -112,12 +112,12 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha5"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha6"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "OCR → 문맥/화자 → 캐시/용어집 → 선택한 OpenAI 모델 → 오버레이"
+            text = "OCR → 화자/문맥 → 모델별 캐시/용어집 → OpenAI → 오버레이"
             textSize = 15f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -189,9 +189,15 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ API 키는 Android Keystore로 보호해 저장합니다. 긴 대사는 같은 모델의 Room 캐시를 재사용하고, 짧고 문맥 의존적인 대사는 직전 문맥을 반영하기 위해 원문 단독 캐시를 우회합니다. 용어집 완전 일치 항목은 API 없이 즉시 반환합니다."
+            text = "※ API 키는 Android Keystore로 보호해 저장합니다. 모델별 번역 캐시를 따로 보존하고, 20자 이하의 짧은 문맥 의존 대사는 직전 문맥·화자를 반영하기 위해 원문 단독 영구 캐시를 우회합니다. 용어집 완전 일치 항목은 API 없이 즉시 반환합니다."
             textSize = 12f
             setPadding(0, dp(6), 0, dp(10))
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(TextView(this).apply {
+            text = "※ 화자명은 용어집에 등록된 카타카나 이름을 기준으로 인식하며, 괄호·따옴표·콜론 같은 장식 문자를 제거해 비교합니다. 같은 대화가 이어질 때는 확인된 화자를 최대 90초간 문맥으로 유지합니다. 긴 번역이 96토큰에서 잘린 경우에만 160토큰으로 1회 재시도합니다."
+            textSize = 12f
+            setPadding(0, 0, 0, dp(10))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
