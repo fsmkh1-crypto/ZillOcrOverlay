@@ -62,14 +62,19 @@
 - [x] Android llama.cpp 사전 빌드 AAR 후보 선정
 - [x] `llama-android` CPU/NEON 런타임 Gradle 통합
 - [x] GGUF 파일 선택 및 앱 전용 모델 폴더 복사 UI
-- [x] context 1024 / threads 4 / max output 128 테스트 설정
+- [x] context 1024 / threads 4 로컬 테스트 설정
 - [x] 일본어→한국어 단독 로컬 번역 벤치마크 화면
 - [x] 총 처리시간 / tok/s 표시
-- [ ] TranslateGemma 4B Q4_K_M POCO 실기기 로딩 확인
-- [ ] TranslateGemma 4B Q4_K_M 번역 품질·속도 측정
+- [x] TranslateGemma 4B Q4_K_M POCO 실기기 로딩 성공
+- [x] TranslateGemma 4B Q4_K_M 번역 품질 1차 확인
+- [x] alpha1 총 8.93초 / 9.49초, 8.54 / 7.60 tok/s 측정
+- [x] 모델 상주 재사용 구조(alpha2 벤치) 구현
+- [x] 최초 로딩 시간과 순수 번역 시간 분리 계측
+- [x] temperature 0 / greedy 고정으로 결과 일관성 강화
+- [ ] alpha2 POCO 실기기 순수 번역 시간 3~5회 측정
 - [ ] 로컬 실행 중 RAM / 발열 측정
 - [ ] PPSSPP 동시 실행 프레임 영향 측정
-- [ ] 모델 상주형 `LocalTranslationProvider` 구현
+- [ ] 실시간용 `LocalTranslationProvider` 구현
 - [ ] Room 캐시 → 로컬 모델 → 오버레이 연결
 - [ ] API / 로컬 엔진 전환 UI
 - [ ] Qwen 3~4B Q4 비교

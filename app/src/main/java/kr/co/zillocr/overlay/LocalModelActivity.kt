@@ -35,6 +35,7 @@ class LocalModelActivity : ComponentActivity() {
         if (uri == null) return@registerForActivityResult
 
         lifecycleScope.launch {
+            withContext(Dispatchers.IO) { LocalModelTester.release() }
             resultView.text = "모델을 앱 저장공간으로 복사 중입니다…\n(2~3GB 모델은 몇 분 걸릴 수 있습니다)"
             try {
                 val copied = withContext(Dispatchers.IO) {
@@ -51,7 +52,7 @@ class LocalModelActivity : ComponentActivity() {
                 localModelPath = copied.absolutePath
                 persistModelPath()
                 modelPathView.text = "선택됨: ${copied.name}\n${formatBytes(copied.length())}\n${copied.absolutePath}"
-                resultView.text = "모델 준비 완료. 아래 테스트 번역을 눌러 실제 구동을 확인하세요."
+                resultView.text = "모델 준비 완료. 먼저 ‘모델 메모리 로드’를 눌러 로딩 시간을 재세요."
             } catch (e: Exception) {
                 resultView.text = "모델 복사 실패: ${e.message ?: e.javaClass.simpleName}"
             }
@@ -75,12 +76,12 @@ class LocalModelActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "로컬 번역 모델 · 0.4.0 alpha"
+            text = "로컬 번역 모델 · 0.4.0 alpha2"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "TranslateGemma 4B Q4_K_M 같은 GGUF 파일을 선택한 뒤, 실제 기기에서 로딩·번역 속도를 먼저 측정합니다. 이 알파에서는 게임 실시간 번역 전환 전 단계인 ‘로컬 모델 구동 검증’에 집중합니다."
+            text = "이번 알파는 GGUF 모델을 한 번만 메모리에 올린 뒤 계속 재사용합니다. 첫 로딩 시간과 순수 번역 시간을 분리해서 측정하고, temperature=0(그리디)로 같은 문장의 결과 흔들림도 줄였습니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -104,6 +105,11 @@ class LocalModelActivity : ComponentActivity() {
             }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
+        root.addView(Button(this).apply {
+            text = "모델 메모리 로드"
+            setOnClickListener { loadModelOnly() }
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
         testInput = EditText(this).apply {
             hint = "테스트할 일본어 대사"
             setText("どの敵にも必ず弱点がある。それを見逃さず、的確に見破れれば、戦いをうまく運べるだろう。")
@@ -112,7 +118,7 @@ class LocalModelActivity : ComponentActivity() {
         root.addView(testInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "로컬 모델 테스트 번역"
+            text = "상주 모델로 테스트 번역"
             setOnClickListener { runLocalTest() }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -131,6 +137,30 @@ class LocalModelActivity : ComponentActivity() {
         return ScrollView(this).apply { addView(root) }
     }
 
+    private fun loadModelOnly() {
+        if (localModelPath.isBlank() || !File(localModelPath).exists()) {
+            Toast.makeText(this, "먼저 GGUF 모델을 선택하세요", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            resultView.text = "모델을 메모리에 로드 중…"
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    LocalModelTester.load(localModelPath)
+                }
+                resultView.text = if (result.reused) {
+                    "이미 메모리에 로드되어 있습니다.\n이제 ‘상주 모델로 테스트 번역’을 여러 번 눌러 순수 번역 시간을 비교하세요."
+                } else {
+                    "모델 메모리 로드 완료\n로딩 시간: ${String.format("%.2f초", result.elapsedMs / 1000.0)}\n이제 번역 버튼은 모델을 다시 읽지 않습니다."
+                }
+            } catch (e: OutOfMemoryError) {
+                resultView.text = "모델 로딩 중 메모리 부족(OOM). 더 작은 양자화/모델이 필요합니다."
+            } catch (e: Exception) {
+                resultView.text = "로컬 모델 로드 오류: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
     private fun runLocalTest() {
         if (localModelPath.isBlank() || !File(localModelPath).exists()) {
             Toast.makeText(this, "먼저 GGUF 모델을 선택하세요", Toast.LENGTH_SHORT).show()
@@ -140,7 +170,7 @@ class LocalModelActivity : ComponentActivity() {
         if (source.isBlank()) return
 
         lifecycleScope.launch {
-            resultView.text = "모델 로딩 + 번역 중…\n첫 실행은 오래 걸릴 수 있습니다."
+            resultView.text = "번역 중…"
             try {
                 val result = withContext(Dispatchers.IO) {
                     LocalModelTester.translate(localModelPath, source)
@@ -148,10 +178,23 @@ class LocalModelActivity : ComponentActivity() {
                 resultView.text = buildString {
                     append("번역 결과\n")
                     append(result.text)
-                    append("\n\n총 시간: ")
-                    append(String.format("%.2f초", result.elapsedMs / 1000.0))
+                    append("\n\n순수 번역 시간: ")
+                    append(String.format("%.2f초", result.inferenceMs / 1000.0))
                     append("\n생성 속도: ")
                     append(String.format("%.2f tok/s", result.tokensPerSecond))
+                    append("\nprompt eval: ")
+                    append(result.promptEvalMs)
+                    append(" ms")
+                    append("\ngenerate: ")
+                    append(result.generateMs)
+                    append(" ms")
+                    if (!result.reusedLoadedModel) {
+                        append("\n이번 요청에는 최초 모델 로딩 ")
+                        append(String.format("%.2f초", result.loadMs / 1000.0))
+                        append("가 포함됐습니다. 다음 요청부터는 재사용됩니다.")
+                    } else {
+                        append("\n모델 재사용: 예")
+                    }
                 }
             } catch (e: OutOfMemoryError) {
                 resultView.text = "메모리 부족(OOM). 더 작은 양자화 모델(Q3/Q2)이나 더 작은 모델이 필요합니다."
@@ -179,14 +222,24 @@ class LocalModelActivity : ComponentActivity() {
             .setTitle("로컬 모델 삭제")
             .setMessage("앱 저장공간에 복사한 GGUF 모델을 삭제할까요?")
             .setPositiveButton("삭제") { _, _ ->
-                runCatching { File(localModelPath).delete() }
-                localModelPath = ""
-                persistModelPath()
-                modelPathView.text = "선택된 GGUF 모델 없음"
-                resultView.text = "모델을 삭제했습니다."
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { LocalModelTester.release() }
+                    runCatching { File(localModelPath).delete() }
+                    localModelPath = ""
+                    persistModelPath()
+                    modelPathView.text = "선택된 GGUF 모델 없음"
+                    resultView.text = "모델을 삭제했습니다."
+                }
             }
             .setNegativeButton("취소", null)
             .show()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        lifecycleScope.launch(Dispatchers.IO) {
+            LocalModelTester.release()
+        }
     }
 
     private fun formatBytes(bytes: Long): String {
