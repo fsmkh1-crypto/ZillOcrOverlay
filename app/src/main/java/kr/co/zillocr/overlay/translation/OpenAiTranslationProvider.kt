@@ -4,7 +4,6 @@ import android.content.Context
 import kr.co.zillocr.overlay.data.AppContextHolder
 import kr.co.zillocr.overlay.db.AppDatabase
 import kr.co.zillocr.overlay.db.TranslationEntity
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -20,9 +19,8 @@ class OpenAiTranslationProvider(
 
     constructor(apiKey: String, model: String = DEFAULT_MODEL) : this(AppContextHolder.require(), apiKey, model)
 
-    private val database = AppDatabase.get(context)
-    private val translationDao = database.translationDao()
-    private val glossaryDao = database.glossaryDao()
+    private val translationDao = AppDatabase.get(context).translationDao()
+    private val glossaryDao = AppDatabase.get(context).glossaryDao()
 
     override fun translate(japaneseText: String, previousContext: List<String>): String {
         require(apiKey.isNotBlank()) { "OpenAI API 키가 없습니다" }
@@ -36,10 +34,13 @@ class OpenAiTranslationProvider(
             return cached.translatedText
         }
 
-        val relevantGlossary = glossaryDao.all()
-            .filter { entry -> japaneseText.contains(entry.sourceTerm) || previousContext.any { it.contains(entry.sourceTerm) } }
+        val relevantGlossary = glossarySnapshot()
+            .asSequence()
+            .filter { entry ->
+                japaneseText.contains(entry.first) || previousContext.any { it.contains(entry.first) }
+            }
             .take(MAX_GLOSSARY_TERMS)
-            .associate { it.sourceTerm to it.targetTerm }
+            .toList()
 
         val input = buildInput(japaneseText, previousContext, relevantGlossary)
         var lastEmptyDetail = ""
@@ -72,26 +73,33 @@ class OpenAiTranslationProvider(
         throw IllegalStateException(lastEmptyDetail.ifBlank { "OpenAI 번역 결과가 비어 있습니다" })
     }
 
+    private fun glossarySnapshot(): List<Pair<String, String>> {
+        synchronized(glossaryLock) {
+            glossaryCache?.let { return it }
+            return glossaryDao.all()
+                .map { it.sourceTerm to it.targetTerm }
+                .also { glossaryCache = it }
+        }
+    }
+
     private fun buildInput(
         japaneseText: String,
         previousContext: List<String>,
-        glossary: Map<String, String>
-    ): String {
-        val contextBlock = previousContext.takeLast(2).takeIf { it.isNotEmpty() }
-            ?.joinToString("\n") ?: "(없음)"
-        val glossaryBlock = glossary.takeIf { it.isNotEmpty() }
-            ?.entries?.joinToString("\n") { "${it.key} → ${it.value}" } ?: "(없음)"
-
-        return """
-            [용어집]
-            $glossaryBlock
-
-            [직전 일본어 대사]
-            $contextBlock
-
-            [현재 일본어 대사]
-            $japaneseText
-        """.trimIndent()
+        glossary: List<Pair<String, String>>
+    ): String = buildString {
+        if (glossary.isNotEmpty()) {
+            append("[용어집]\n")
+            glossary.forEach { (source, target) -> append(source).append(" → ").append(target).append('\n') }
+            append('\n')
+        }
+        val context = previousContext.takeLast(2)
+        if (context.isNotEmpty()) {
+            append("[직전 대사]\n")
+            append(context.joinToString("\n"))
+            append("\n\n")
+        }
+        append("[현재 대사]\n")
+        append(japaneseText)
     }
 
     private fun requestTranslation(input: String): ApiResponse {
@@ -101,7 +109,7 @@ class OpenAiTranslationProvider(
             put("instructions", SYSTEM_INSTRUCTIONS)
             put("input", input)
             put("store", false)
-            put("max_output_tokens", 180)
+            put("max_output_tokens", 96)
             put("reasoning", JSONObject().apply { put("effort", "none") })
             put("text", JSONObject().apply {
                 put("verbosity", "low")
@@ -111,8 +119,8 @@ class OpenAiTranslationProvider(
 
         val connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 10_000
-            readTimeout = 20_000
+            connectTimeout = 8_000
+            readTimeout = 15_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $apiKey")
@@ -170,25 +178,23 @@ class OpenAiTranslationProvider(
         private const val API_URL = "https://api.openai.com/v1/responses"
         private const val DEFAULT_MODEL = "gpt-5.6-luna"
         private const val MAX_CACHE_ENTRIES = 256
-        private const val MAX_GLOSSARY_TERMS = 80
+        private const val MAX_GLOSSARY_TERMS = 48
         private const val MAX_ATTEMPTS = 2
 
-        private val SYSTEM_INSTRUCTIONS = """
-            일본 판타지 RPG 대사를 자연스러운 한국어로 번역한다.
-            현재 대사의 의미를 정확히 보존하고 원문의 존댓말/반말, 사회적 위계, 거친 말투, 고풍스러운 말투, 캐릭터의 말버릇과 분위기를 가능한 한 그대로 살린다.
-            일본어에서 드러나지 않은 성별, 신분, 관계를 임의로 만들어내지 않는다.
-            고유명사는 제공된 용어집을 우선한다.
-            직전 대사는 문맥 파악에만 사용하고 현재 대사만 번역한다.
-            설명, 주석, 원문 반복 없이 한국어 번역문만 출력한다.
-        """.trimIndent()
+        private const val SYSTEM_INSTRUCTIONS =
+            "일본 판타지 RPG 대사를 자연스러운 한국어로 번역. 의미를 추가하거나 빼지 말고 존댓말/반말, 위계, 거친 말투, 고풍체, 캐릭터 어조를 유지. 일본어에 없는 성별·신분·관계를 추측하지 말 것. 용어집 우선. 직전 대사는 문맥에만 사용. 현재 대사만 한국어 번역문으로 출력."
 
         private val memoryCache = object : LinkedHashMap<String, String>(MAX_CACHE_ENTRIES, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
                 size > MAX_CACHE_ENTRIES
         }
 
+        private val glossaryLock = Any()
+        @Volatile private var glossaryCache: List<Pair<String, String>>? = null
+
         fun clearMemoryCache() {
             synchronized(memoryCache) { memoryCache.clear() }
+            synchronized(glossaryLock) { glossaryCache = null }
         }
     }
 }
