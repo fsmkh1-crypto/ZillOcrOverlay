@@ -13,8 +13,8 @@ android {
         applicationId = "kr.co.zillocr.overlay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
     }
 
     buildTypes {
@@ -40,10 +40,7 @@ kotlin {
 }
 
 dependencies {
-    // Keep current prototype on compileSdk 36 / AGP 8.13.2.
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.12.4")
-
-    // Bundled Japanese OCR model: no first-run model download required.
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
 }
