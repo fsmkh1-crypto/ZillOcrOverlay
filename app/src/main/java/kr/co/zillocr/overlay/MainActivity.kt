@@ -41,7 +41,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var translationEnabledCheck: CheckBox
     private lateinit var apiKeyInput: EditText
-    private lateinit var modelInput: EditText
 
     private val dbExecutor = Executors.newSingleThreadExecutor()
     private val database by lazy { AppDatabase.get(this) }
@@ -101,7 +100,6 @@ class MainActivity : ComponentActivity() {
     private fun buildContentView(): View {
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
-
         val saved = TranslationSettingsStore.load(this)
 
         val root = LinearLayout(this).apply {
@@ -111,37 +109,35 @@ class MainActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "질올 실시간 번역 오버레이 · 0.3.0"
+            text = "질올 실시간 번역 오버레이 · 0.5.0 alpha1"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "OCR → 영구 캐시 → 용어집 적용 → OpenRouter 번역 순서로 처리합니다."
+            text = "OCR → 캐시 → 용어집/직전 문맥 → GPT-5.6 Luna → 오버레이"
             textSize = 15f
             setPadding(0, dp(12), 0, dp(12))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         translationEnabledCheck = CheckBox(this).apply {
-            text = "API 번역 사용"
+            text = "GPT-5.6 Luna 번역 사용"
             isChecked = saved.enabled
         }
         root.addView(translationEnabledCheck, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         apiKeyInput = EditText(this).apply {
-            hint = "OpenRouter API 키 (sk-or-v1-...)"
+            hint = "OpenAI API 키"
             setText(saved.apiKey)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             maxLines = 1
         }
         root.addView(apiKeyInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
-        modelInput = EditText(this).apply {
-            hint = "모델 (기본: openrouter/free)"
-            setText(saved.model)
-            inputType = InputType.TYPE_CLASS_TEXT
-            maxLines = 1
-        }
-        root.addView(modelInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        root.addView(TextView(this).apply {
+            text = "모델: ${TranslationSettingsStore.DEFAULT_MODEL} · reasoning none · low verbosity"
+            textSize = 13f
+            setPadding(0, dp(4), 0, dp(8))
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
             text = "번역 설정 저장"
@@ -164,14 +160,14 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "OpenRouter API 키 발급 페이지"
+            text = "OpenAI API 키 페이지"
             setOnClickListener {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://openrouter.ai/settings/keys")))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://platform.openai.com/api-keys")))
             }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "※ 같은 일본어 원문은 앱을 종료해도 Room 캐시에서 재사용합니다. 용어집을 수정하면 해당 용어가 들어간 기존 캐시만 자동 무효화합니다."
+            text = "※ API 키는 Android Keystore로 보호해 저장합니다. 같은 일본어 원문은 Room 캐시에서 재사용하며, 용어집 수정 시 관련 캐시는 자동 무효화합니다."
             textSize = 12f
             setPadding(0, dp(6), 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -189,7 +185,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "사용: 키 입력·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
+            text = "사용: 새 OpenAI 키 입력·저장 → 시작 → 전체 화면 캡처 허용 → PPSSPP → ‘영역’ → 대화창 드래그"
             textSize = 14f
             setPadding(0, dp(18), 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -212,11 +208,8 @@ class MainActivity : ComponentActivity() {
     private fun showGlossaryManager() {
         dbExecutor.execute {
             val entries = database.glossaryDao().all()
-            val body = if (entries.isEmpty()) {
-                "등록된 용어가 없습니다."
-            } else {
-                entries.joinToString("\n") { "${it.sourceTerm} → ${it.targetTerm}" }
-            }
+            val body = if (entries.isEmpty()) "등록된 용어가 없습니다."
+            else entries.joinToString("\n") { "${it.sourceTerm} → ${it.targetTerm}" }
             runOnUiThread {
                 AlertDialog.Builder(this)
                     .setTitle("용어집 · ${entries.size}개")
@@ -252,14 +245,10 @@ class MainActivity : ComponentActivity() {
                     return@setPositiveButton
                 }
                 dbExecutor.execute {
-                    database.glossaryDao().upsert(
-                        GlossaryEntity(sourceText, targetText, System.currentTimeMillis())
-                    )
+                    database.glossaryDao().upsert(GlossaryEntity(sourceText, targetText, System.currentTimeMillis()))
                     database.translationDao().invalidateContaining(sourceText)
                     OpenAiTranslationProvider.clearMemoryCache()
-                    runOnUiThread {
-                        Toast.makeText(this, "용어를 저장했습니다", Toast.LENGTH_SHORT).show()
-                    }
+                    runOnUiThread { Toast.makeText(this, "용어를 저장했습니다", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setNegativeButton("취소", null)
@@ -278,9 +267,7 @@ class MainActivity : ComponentActivity() {
                     database.glossaryDao().delete(sourceText)
                     database.translationDao().invalidateContaining(sourceText)
                     OpenAiTranslationProvider.clearMemoryCache()
-                    runOnUiThread {
-                        Toast.makeText(this, "용어를 삭제했습니다", Toast.LENGTH_SHORT).show()
-                    }
+                    runOnUiThread { Toast.makeText(this, "용어를 삭제했습니다", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setNegativeButton("취소", null)
@@ -293,13 +280,10 @@ class MainActivity : ComponentActivity() {
             val count = dao.count()
             val recent = dao.recent(30)
             val dateFormat = SimpleDateFormat("MM-dd HH:mm", Locale.KOREA)
-            val text = if (recent.isEmpty()) {
-                "저장된 번역이 없습니다."
-            } else {
-                recent.joinToString("\n\n") { item ->
-                    val time = dateFormat.format(Date(item.lastUsedAt))
-                    "[$time · ${item.useCount}회]\n${item.sourceText}\n→ ${item.translatedText}"
-                }
+            val text = if (recent.isEmpty()) "저장된 번역이 없습니다."
+            else recent.joinToString("\n\n") { item ->
+                val time = dateFormat.format(Date(item.lastUsedAt))
+                "[$time · ${item.useCount}회]\n${item.sourceText}\n→ ${item.translatedText}"
             }
             runOnUiThread {
                 val textView = TextView(this).apply {
@@ -324,9 +308,7 @@ class MainActivity : ComponentActivity() {
                 dbExecutor.execute {
                     database.translationDao().clear()
                     OpenAiTranslationProvider.clearMemoryCache()
-                    runOnUiThread {
-                        Toast.makeText(this, "번역 캐시를 삭제했습니다", Toast.LENGTH_SHORT).show()
-                    }
+                    runOnUiThread { Toast.makeText(this, "번역 캐시를 삭제했습니다", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setNegativeButton("취소", null)
@@ -337,22 +319,16 @@ class MainActivity : ComponentActivity() {
         TranslationSettingsStore.save(
             context = this,
             enabled = translationEnabledCheck.isChecked,
-            apiKey = apiKeyInput.text?.toString().orEmpty(),
-            model = modelInput.text?.toString().orEmpty()
+            apiKey = apiKeyInput.text?.toString().orEmpty()
         )
-        if (showToast) {
-            Toast.makeText(this, "번역 설정을 저장했습니다", Toast.LENGTH_SHORT).show()
-        }
+        if (showToast) Toast.makeText(this, "Luna 번역 설정을 저장했습니다", Toast.LENGTH_SHORT).show()
     }
 
     private fun beginCaptureFlow() {
         saveTranslationSettings(showToast = false)
         if (!Settings.canDrawOverlays(this)) {
             waitingForOverlayPermission = true
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             overlayPermissionLauncher.launch(intent)
             return
         }
