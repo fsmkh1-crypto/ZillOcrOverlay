@@ -27,11 +27,15 @@ Android에서 PPSSPP로 실행하는 **Zill O’ll Infinite Plus 일본어판**�
 - Kotlin: 2.3.20
 - compileSdk / targetSdk: 36
 - minSdk: 26
+- AndroidX Core KTX: 1.17.0
+- AndroidX Activity KTX: 1.12.4
 - ML Kit Japanese Text Recognition: `com.google.mlkit:text-recognition-japanese:16.0.1`
 
 ## 빌드
 
 GitHub Actions의 `Build debug APK` 워크플로가 `main` 브랜치 변경 시 자동으로 `assembleDebug`를 실행하고 APK를 artifact로 보관합니다.
+
+2026-08-23 실제 GitHub Actions 빌드에서 `assembleDebug`와 debug APK artifact 업로드까지 성공했습니다.
 
 로컬에서 빌드할 경우 Android SDK Platform 36과 JDK 17이 필요합니다.
 
@@ -61,10 +65,12 @@ Android 14(API 34) 이상에서는 각 MediaProjection 세션마다 새 사용�
 
 ## 다음 단계
 
-`TODO.md` 참고.
+`TODO.md` 참고. 현재 다음 작업은 POCO X8 Pro Max에 debug APK를 설치해 PPSSPP 실화면에서 OCR 영역 좌표, 정확도, 지연, HyperOS 오버레이 동작을 검증하는 것입니다.
 
 ## 검증 상태
 
 - XML 파싱 확인: 완료
 - Kotlin 소스 문법 smoke check: 완료(파서 수준)
-- GitHub Actions 실제 `assembleDebug`: 자동 빌드에서 검증
+- GitHub Actions 실제 `assembleDebug`: **성공**
+- debug APK artifact 생성: **성공**
+- POCO X8 Pro Max 실기기: **미검증**
