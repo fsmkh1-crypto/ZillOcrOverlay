@@ -4,11 +4,11 @@ import android.content.Context
 
 object TranslationSettingsStore {
     private const val PREFS = "translation_settings"
-    private const val KEY_API_KEY = "openai_api_key"
-    private const val KEY_MODEL = "openai_model"
+    private const val KEY_API_KEY = "openrouter_api_key"
+    private const val KEY_MODEL = "openrouter_model"
     private const val KEY_ENABLED = "translation_enabled"
 
-    const val DEFAULT_MODEL = "gpt-5.6-luna"
+    const val DEFAULT_MODEL = "openrouter/free"
 
     data class Settings(
         val enabled: Boolean,
