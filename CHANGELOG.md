@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.2 - 2026-08-23
+
+### Fixed
+
+- 같은 대사에서 ML Kit OCR 결과가 프레임마다 미세하게 흔들리며 번역/자막이 반복 갱신되던 현상 완화
+- 새 OCR 문장은 유사한 결과가 2회 연속 확인된 뒤에만 확정
+- 확정된 문장과 약 86% 이상 유사한 OCR 결과는 같은 대사로 간주해 재번역 억제
+- 자막 텍스트가 실제로 바뀌지 않으면 TextView 값을 다시 설정하지 않음
+- 자막 위치가 실제로 바뀌지 않으면 `updateViewLayout()`을 호출하지 않음
+- OpenRouter가 `content: null` 또는 빈 completion을 반환할 때 화면에 `null`이 표시되던 문제 수정
+
+### Changed
+
+- OpenRouter 빈 응답은 1회 자동 재시도
+- OpenRouter 요청에 reasoning 비활성화 옵션 추가
+- 빈 응답이 계속되면 실제 응답 모델명과 `finish_reason`을 오류 문구에 포함
+- 버전 0.2.2 / versionCode 4
+
+### Trade-off
+
+- 새 대사 확정에 OCR 한 주기(기본 약 500ms)가 추가로 필요할 수 있으나, 자막 안정성을 우선함
+
+### Validation
+
+- GitHub Actions `assembleDebug` 검증 예정
+- POCO X8 Pro Max 실기기 깜빡임 재검증 예정
+
 ## 0.2.1 - 2026-08-23
 
 ### Changed
@@ -22,8 +49,9 @@
 
 ### Validation
 
-- GitHub Actions `assembleDebug` 검증 예정
-- POCO X8 Pro Max 실기기 OpenRouter 번역 검증 예정
+- GitHub Actions `assembleDebug` 성공
+- POCO X8 Pro Max 실기기 OpenRouter 번역 동작 확인
+- 동일 대사에서 자막 깜빡임 현상 확인 → 0.2.2에서 수정
 
 ## 0.2.0 - 2026-08-23
 
