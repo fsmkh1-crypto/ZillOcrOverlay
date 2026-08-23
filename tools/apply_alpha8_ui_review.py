@@ -4,24 +4,23 @@ path = Path("app/src/main/java/kr/co/zillocr/overlay/capture/ScreenOcrService.kt
 s = path.read_text(encoding="utf-8")
 
 if "private var detailsPanel: LinearLayout? = null" in s:
-    print("alpha8 UI review patch already applied")
+    print("alpha8 final control UI already applied")
     raise SystemExit(0)
 
+s = s.replace("import android.widget.EditText\nimport android.widget.LinearLayout\n", "import android.widget.EditText\nimport android.widget.FrameLayout\nimport android.widget.LinearLayout\n")
+s = s.replace("import kr.co.zillocr.overlay.MainActivity\n", "import kr.co.zillocr.overlay.LearningManagerActivity\nimport kr.co.zillocr.overlay.MainActivity\n")
+s = s.replace("import kr.co.zillocr.overlay.db.FeedbackEntity\n", "import kr.co.zillocr.overlay.db.FeedbackEntity\nimport kr.co.zillocr.overlay.db.OcrAliasEntity\nimport kr.co.zillocr.overlay.db.SpeakerEntity\n")
+
 s = s.replace(
-    "import android.widget.EditText\nimport android.widget.LinearLayout\n",
-    "import android.widget.EditText\nimport android.widget.FrameLayout\nimport android.widget.LinearLayout\n",
-)
-s = s.replace(
-    "import kr.co.zillocr.overlay.MainActivity\n",
-    "import kr.co.zillocr.overlay.LearningManagerActivity\nimport kr.co.zillocr.overlay.MainActivity\n",
-)
-s = s.replace(
-    "import kr.co.zillocr.overlay.db.FeedbackEntity\n",
-    "import kr.co.zillocr.overlay.db.FeedbackEntity\nimport kr.co.zillocr.overlay.db.OcrAliasEntity\nimport kr.co.zillocr.overlay.db.SpeakerEntity\n",
-)
-s = s.replace(
-    "    private var correctionDialog: AlertDialog? = null\n\n    private var overlayTextSizeSp",
-    """    private var correctionDialog: AlertDialog? = null
+'''    private var controlView: View? = null
+    private var speakerApproveButton: Button? = null
+    private var aliasApproveButton: Button? = null
+    private var selectorView: RegionSelectionView? = null
+    private var correctionDialog: AlertDialog? = null
+''',
+'''    private var controlView: View? = null
+    private var selectorView: RegionSelectionView? = null
+    private var correctionDialog: AlertDialog? = null
     private var detailsPanel: LinearLayout? = null
     private var primaryActions: LinearLayout? = null
     private var gearBadgeView: TextView? = null
@@ -30,17 +29,33 @@ s = s.replace(
     private var autoHeightButton: Button? = null
     private var speakerModeButton: Button? = null
     private var alphaButton: Button? = null
+''')
 
-    private var overlayTextSizeSp""",
-)
-s = s.replace(
-    "                        showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))\n                        showPendingLearningHintIfNeeded()\n",
-    "                        showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))\n                        showPendingLearningHintIfNeeded()\n                        refreshLearningControls()\n",
-)
-
-start = s.index("    private fun approveSpeakerCandidate() {")
+start = s.index("    private fun showPendingLearningHintIfNeeded() {")
 end = s.index("    private fun recordPositiveFeedback() {", start)
-s = s[:start] + r'''    private fun requestSpeakerCandidateApproval() {
+s = s[:start] + r'''    private fun showPendingLearningHintIfNeeded() {
+        refreshLearningControls()
+        val speaker = OpenAiTranslationProvider.peekPendingSpeakerCandidate()
+        val alias = OpenAiTranslationProvider.peekPendingAliasCandidate()
+        if (speaker != null || alias != null) {
+            val message = buildString {
+                speaker?.let { append("화자 후보 ${it.source} → ${it.suggestedTarget} · ⚙에서 확인") }
+                if (speaker != null && alias != null) append("\n")
+                alias?.let { append("OCR 후보 ${it.observed} → ${it.canonical} · ⚙에서 확인") }
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun retryLastTranslation() {
+        val previous = lastTranslationRequest ?: return
+        val forced = previous.copy(force = true)
+        lastTranslationRequest = forced
+        showResultOverlay("다시 번역 중…")
+        enqueueTranslation(forced)
+    }
+
+    private fun requestSpeakerCandidateApproval() {
         val candidate = OpenAiTranslationProvider.peekPendingSpeakerCandidate()
         if (candidate == null) {
             Toast.makeText(this, "승인 대기 중인 화자 후보가 없습니다", Toast.LENGTH_SHORT).show()
@@ -133,35 +148,39 @@ s = s[:start] + r'''    private fun requestSpeakerCandidateApproval() {
 ''' + s[end:]
 
 s = s.replace(
-    """        dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+'''        dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        dialog.setOnShowListener {
+            dialog.window?.apply {
+                clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                attributes = attributes.apply { dimAmount = 0.35f }
+            }
+        }
         dialog.setOnDismissListener { if (correctionDialog === dialog) correctionDialog = null }
         correctionDialog = dialog
         dialog.show()
-""",
-    """        dialog.setCanceledOnTouchOutside(false)
-        dialog.setOnDismissListener { if (correctionDialog === dialog) correctionDialog = null }
+''',
+'''        dialog.setOnDismissListener { if (correctionDialog === dialog) correctionDialog = null }
         correctionDialog = dialog
         showOverlayDialog(dialog)
-""",
-)
+''')
+
 s = s.replace(
-    """        Toast.makeText(this, if (autoHeightEnabled) "자동 높이 ON" else "자동 높이 OFF", Toast.LENGTH_SHORT).show()
+'''        Toast.makeText(this, if (autoHeightEnabled) "자동 높이 ON" else "자동 높이 OFF", Toast.LENGTH_SHORT).show()
         if (autoHeightEnabled) applyAutoHeight()
-""",
-    """        Toast.makeText(this, if (autoHeightEnabled) "자동 높이 ON" else "자동 높이 OFF", Toast.LENGTH_SHORT).show()
+''',
+'''        Toast.makeText(this, if (autoHeightEnabled) "자동 높이 ON" else "자동 높이 OFF", Toast.LENGTH_SHORT).show()
         updateControlStateLabels()
         if (autoHeightEnabled) applyAutoHeight()
-""",
-)
+''')
 s = s.replace(
-    """        lastDisplayedSpeakerTarget = null
+'''        lastDisplayedSpeakerTarget = null
         Toast.makeText(this, if (speakerAlways) "화자명: 항상 표시" else "화자명: 바뀔 때만 표시", Toast.LENGTH_SHORT).show()
-""",
-    """        lastDisplayedSpeakerTarget = null
+''',
+'''        lastDisplayedSpeakerTarget = null
         Toast.makeText(this, if (speakerAlways) "화자명: 항상 표시" else "화자명: 바뀔 때만 표시", Toast.LENGTH_SHORT).show()
         updateControlStateLabels()
-""",
-)
+''')
 
 start = s.index("    private fun showControlOverlay() {")
 end = s.index("    private fun toggleResultVisibility() {", start)
@@ -175,7 +194,6 @@ s = s[:start] + r'''    private fun showControlOverlay() {
             gravity = Gravity.END
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-
         val primaryBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -204,9 +222,7 @@ s = s[:start] + r'''    private fun showControlOverlay() {
             val nowVisible = actions.visibility == View.VISIBLE
             actions.visibility = if (nowVisible) View.GONE else View.VISIBLE
             if (nowVisible) detailsPanel?.visibility = View.GONE
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-        }
+        }.apply { layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)) }
         primaryBar.addView(menu)
         actions.addView(primaryButton("숨") { toggleResultVisibility() })
         actions.addView(primaryButton("재") { retryLastTranslation() })
@@ -253,9 +269,7 @@ s = s[:start] + r'''    private fun showControlOverlay() {
             setBackgroundColor(0xF21C1C22.toInt())
             setPadding(dp(10), dp(10), dp(10), dp(10))
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(panelWidth, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(panelWidth, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
         }
         detailsPanel = panel
 
@@ -273,9 +287,7 @@ s = s[:start] + r'''    private fun showControlOverlay() {
             minimumHeight = 0
             setPadding(dp(6), 0, dp(6), 0)
             setOnClickListener { action() }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply {
-                topMargin = dp(3)
-            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply { topMargin = dp(3) }
         }
         fun addTwo(left: Button, right: Button) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -288,7 +300,7 @@ s = s[:start] + r'''    private fun showControlOverlay() {
 
         panel.addView(groupLabel("표시 설정"))
         addTwo(panelButton("A− 작게") { changeOverlayTextSize(-1f) }, panelButton("A+ 크게") { changeOverlayTextSize(1f) })
-        val alphaState = panelButton("투명도") { cycleOverlayAlpha(); updateControlStateLabels() }
+        val alphaState = panelButton("투명도") { cycleOverlayAlpha() }
         alphaButton = alphaState
         val autoState = panelButton("자동높이") { toggleAutoHeight() }
         autoHeightButton = autoState
@@ -322,9 +334,7 @@ s = s[:start] + r'''    private fun showControlOverlay() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -380,72 +390,27 @@ s = s[:start] + r'''    private fun showControlOverlay() {
     private fun showOverlayDialog(dialog: AlertDialog) {
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
         dialog.setCanceledOnTouchOutside(false)
-        dialog.show()
-        dialog.window?.let { window ->
-            window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            window.attributes = window.attributes.apply { dimAmount = 0.35f }
+        dialog.setOnShowListener {
+            dialog.window?.apply {
+                clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                attributes = attributes.apply { dimAmount = 0.35f }
+            }
         }
+        dialog.show()
     }
 
 ''' + s[end:]
 
-old = r'''                MotionEvent.ACTION_DOWN -> {
-                    if (autoHeightEnabled) {
-                        autoHeightEnabled = false
-                        OverlaySettingsStore.saveAutoHeight(this, false)
-                        Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
-                    }
-                    downRawX = event.rawX; downRawY = event.rawY; startWidth = params.width; startHeight = params.height; true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    params.width = (startWidth + (event.rawX - downRawX).toInt()).coerceIn(minWidth, maxWidth)
-                    params.height = (startHeight + (event.rawY - downRawY).toInt()).coerceIn(minHeight, maxHeight)
-                    clampResultGeometry(params)
-                    windowManager.updateViewLayout(container, params)
-                    true
-                }
-'''
-new = r'''                MotionEvent.ACTION_DOWN -> {
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                    startWidth = params.width
-                    startHeight = params.height
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downRawX
-                    val dy = event.rawY - downRawY
-                    if (autoHeightEnabled && (abs(dx) >= dp(6) || abs(dy) >= dp(6))) {
-                        autoHeightEnabled = false
-                        OverlaySettingsStore.saveAutoHeight(this, false)
-                        updateControlStateLabels()
-                        Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
-                    }
-                    params.width = (startWidth + dx.toInt()).coerceIn(minWidth, maxWidth)
-                    params.height = (startHeight + dy.toInt()).coerceIn(minHeight, maxHeight)
-                    clampResultGeometry(params)
-                    windowManager.updateViewLayout(container, params)
-                    true
-                }
-'''
-if old not in s:
-    raise RuntimeError("resize block not found")
-s = s.replace(old, new)
-
+s = s.replace("        OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)\n    }\n\n    private fun beginRegionSelection()", "        OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)\n        updateControlStateLabels()\n    }\n\n    private fun beginRegionSelection()")
+s = s.replace("                OpenAiTranslationProvider.clearDialogueContext()\n                updatePendingLearningButtons()\n", "                OpenAiTranslationProvider.clearDialogueContext()\n                refreshLearningControls()\n")
 s = s.replace(
-    "        OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)\n    }\n\n    private fun beginRegionSelection()",
-    "        OverlaySettingsStore.saveBackgroundAlpha(this, overlayAlpha)\n        updateControlStateLabels()\n    }\n\n    private fun beginRegionSelection()",
-)
-s = s.replace(
-    "                OpenAiTranslationProvider.clearDialogueContext()\n                endRegionSelection()\n",
-    "                OpenAiTranslationProvider.clearDialogueContext()\n                refreshLearningControls()\n                endRegionSelection()\n",
-)
-s = s.replace(
-    """        resultParams = null
+'''        resultParams = null
         controlView = null
-""",
-    """        resultParams = null
+        speakerApproveButton = null
+        aliasApproveButton = null
+''',
+'''        resultParams = null
         controlView = null
         detailsPanel = null
         primaryActions = null
@@ -455,8 +420,7 @@ s = s.replace(
         autoHeightButton = null
         speakerModeButton = null
         alphaButton = null
-""",
-)
+''')
 
 path.write_text(s, encoding="utf-8")
-print("applied alpha8 UI review patch")
+print("applied final alpha8 control UI")
