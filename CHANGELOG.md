@@ -38,7 +38,8 @@
 
 ### Validation
 
-- 0.2.0 GitHub Actions `assembleDebug` 검증 예정
+- 0.2.0 GitHub Actions `assembleDebug` 성공
+- debug APK artifact 업로드 성공
 - POCO X8 Pro Max 실기기 번역 검증 예정
 
 ## 0.1.0 - 2026-08-23
