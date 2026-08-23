@@ -24,12 +24,13 @@ class LocalModelActivity : ComponentActivity() {
     private enum class ModelSlot(
         val label: String,
         val fileName: String,
-        val legacyFallback: Boolean = false
+        val legacyFallback: Boolean = false,
+        val disableThinking: Boolean = false
     ) {
         TRANSLATEGEMMA_Q4("TranslateGemma 4B Q4_K_M", "translategemma-q4.gguf", true),
         TRANSLATEGEMMA_Q3("TranslateGemma 4B Q3_K_M", "translategemma-q3.gguf"),
         EXAONE_Q4("EXAONE 3.5 2.4B Q4_K_M", "exaone-2.4b-q4.gguf"),
-        QWEN_Q4("Qwen3 1.7B Q4_K_M", "qwen3-1.7b-q4.gguf")
+        QWEN_Q4("Qwen3 1.7B Q4_K_M", "qwen3-1.7b-q4.gguf", disableThinking = true)
     }
 
     private lateinit var testInput: EditText
@@ -83,12 +84,12 @@ class LocalModelActivity : ComponentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "로컬 번역 모델 · 0.4.0 alpha4"
+            text = "로컬 번역 모델 · 0.4.0 alpha4.1"
             textSize = 23f
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "4개 모델을 각각 따로 보관하고 같은 일본어 문장으로 비교합니다. 실사용 후보 비교 조건은 6 CPU 스레드 · 짧은 프롬프트 · greedy · 최대 64 tokens로 고정합니다. 각 벤치는 모델을 한 번 로드한 뒤 같은 문장을 3회 번역해 평균을 냅니다."
+            text = "4개 모델을 같은 조건으로 비교합니다. 6 CPU 스레드 · 짧은 프롬프트 · 최대 64 tokens를 사용하며, Qwen3만 /no_think를 강제로 넣어 생각 모드를 끕니다. 각 벤치는 모델을 한 번 로드한 뒤 같은 문장을 3회 번역해 평균을 냅니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -113,7 +114,11 @@ class LocalModelActivity : ComponentActivity() {
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
             root.addView(Button(this).apply {
-                text = "${slot.label} 3회 벤치"
+                text = if (slot.disableThinking) {
+                    "${slot.label} 3회 벤치 (/no_think)"
+                } else {
+                    "${slot.label} 3회 벤치"
+                }
                 setOnClickListener { runBenchmark(slot) }
             }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
@@ -127,7 +132,7 @@ class LocalModelActivity : ComponentActivity() {
         root.addView(testInput, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         resultView = TextView(this).apply {
-            text = "모델을 선택한 뒤 원하는 모델의 3회 벤치 버튼을 누르세요."
+            text = "Qwen3 수정 확인은 Qwen3 3회 벤치만 다시 실행하면 됩니다."
             textSize = 15f
             setPadding(0, dp(18), 0, 0)
         }
@@ -146,7 +151,8 @@ class LocalModelActivity : ComponentActivity() {
         if (source.isBlank()) return
 
         lifecycleScope.launch {
-            resultView.text = "${slot.label}\n모델 로드 후 3회 벤치 중…\n기기 발열 상태에 따라 결과가 달라질 수 있습니다."
+            resultView.text = "${slot.label}\n모델 로드 후 3회 벤치 중…" +
+                if (slot.disableThinking) "\nQwen3 /no_think 적용 중" else ""
             try {
                 val benchmark = withContext(Dispatchers.IO) {
                     LocalModelTester.release()
@@ -156,7 +162,8 @@ class LocalModelActivity : ComponentActivity() {
                             modelPath = modelFile.absolutePath,
                             japaneseText = source,
                             threads = 6,
-                            promptMode = LocalModelTester.PromptMode.COMPACT
+                            promptMode = LocalModelTester.PromptMode.COMPACT,
+                            disableThinking = slot.disableThinking
                         )
                     }
                     Pair(load, runs)
@@ -171,6 +178,7 @@ class LocalModelActivity : ComponentActivity() {
 
                 resultView.text = buildString {
                     append(slot.label)
+                    if (slot.disableThinking) append(" · /no_think")
                     append("\n파일 크기: ")
                     append(formatBytes(modelFile.length()))
                     append("\n모델 로딩: ")
@@ -215,7 +223,8 @@ class LocalModelActivity : ComponentActivity() {
         ModelSlot.entries.forEach { slot ->
             val file = slotFile(slot)
             slotViews[slot]?.text = if (file.exists() && file.length() > 0L) {
-                "준비됨 · ${file.name} · ${formatBytes(file.length())}"
+                "준비됨 · ${file.name} · ${formatBytes(file.length())}" +
+                    if (slot.disableThinking) " · /no_think" else ""
             } else {
                 "파일 없음"
             }
