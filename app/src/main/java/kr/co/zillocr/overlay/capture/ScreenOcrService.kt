@@ -31,6 +31,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -93,6 +94,8 @@ class ScreenOcrService : Service() {
     private var resultView: TextView? = null
     private var resultParams: WindowManager.LayoutParams? = null
     private var controlView: View? = null
+    private var speakerApproveButton: Button? = null
+    private var aliasApproveButton: Button? = null
     private var selectorView: RegionSelectionView? = null
     private var correctionDialog: AlertDialog? = null
 
@@ -422,15 +425,31 @@ class ScreenOcrService : Service() {
     }
 
     private fun showPendingLearningHintIfNeeded() {
+        updatePendingLearningButtons()
         val speaker = OpenAiTranslationProvider.peekPendingSpeakerCandidate()
         val alias = OpenAiTranslationProvider.peekPendingAliasCandidate()
         if (speaker != null || alias != null) {
             val message = buildString {
-                speaker?.let { append("화자 후보 ${it.source} → ${it.suggestedTarget} · 화+로 승인") }
+                speaker?.let { append("화자 후보 ${it.source} → ${it.suggestedTarget} · ‘화자등록’으로 승인") }
                 if (speaker != null && alias != null) append("\n")
-                alias?.let { append("OCR 후보 ${it.observed} → ${it.canonical} · 용+로 승인") }
+                alias?.let { append("OCR 후보 ${it.observed} → ${it.canonical} · ‘용어등록’으로 승인") }
             }
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun updatePendingLearningButtons() {
+        val speakerPending = OpenAiTranslationProvider.peekPendingSpeakerCandidate() != null
+        val aliasPending = OpenAiTranslationProvider.peekPendingAliasCandidate() != null
+        speakerApproveButton?.apply {
+            isEnabled = speakerPending
+            alpha = if (speakerPending) 1f else 0.45f
+            text = if (speakerPending) "화자등록 (1)" else "화자등록"
+        }
+        aliasApproveButton?.apply {
+            isEnabled = aliasPending
+            alpha = if (aliasPending) 1f else 0.45f
+            text = if (aliasPending) "용어등록 (1)" else "용어등록"
         }
     }
 
@@ -446,6 +465,7 @@ class ScreenOcrService : Service() {
         learningExecutor.execute {
             val approved = OpenAiTranslationProvider.approvePendingSpeaker()
             mainHandler.post {
+                updatePendingLearningButtons()
                 Toast.makeText(
                     this,
                     approved?.let { "화자 등록: ${it.source} → ${it.suggestedTarget}" } ?: "등록할 화자 후보가 없습니다",
@@ -459,6 +479,7 @@ class ScreenOcrService : Service() {
         learningExecutor.execute {
             val approved = OpenAiTranslationProvider.approvePendingAlias()
             mainHandler.post {
+                updatePendingLearningButtons()
                 Toast.makeText(
                     this,
                     approved?.let { "OCR alias 등록: ${it.observed} → ${it.canonical}" } ?: "등록할 OCR 후보가 없습니다",
@@ -509,6 +530,13 @@ class ScreenOcrService : Service() {
             .setNegativeButton("취소", null)
             .create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        dialog.setOnShowListener {
+            dialog.window?.apply {
+                clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                attributes = attributes.apply { dimAmount = 0.35f }
+            }
+        }
         dialog.setOnDismissListener { if (correctionDialog === dialog) correctionDialog = null }
         correctionDialog = dialog
         dialog.show()
@@ -589,51 +617,78 @@ class ScreenOcrService : Service() {
         if (controlView != null) return
         val density = resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
             setBackgroundColor(0x77111111)
-            setPadding(dp(2), dp(2), dp(2), dp(2))
+            setPadding(dp(3), dp(3), dp(3), dp(3))
         }
         val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
             visibility = View.GONE
         }
-        fun compactButton(label: String, widthDp: Int, action: () -> Unit): Button = Button(this).apply {
+        val primaryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val learningRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        fun actionButton(label: String, widthDp: Int = 52, action: () -> Unit): Button = Button(this).apply {
             text = label
-            textSize = 8f
+            textSize = 10f
             minWidth = 0
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(1), 0, dp(1), 0)
+            setPadding(dp(3), 0, dp(3), 0)
             setOnClickListener { action() }
-            layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(30)).apply { marginEnd = dp(1) }
+            layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(48)).apply {
+                marginStart = dp(2)
+                marginBottom = dp(2)
+            }
         }
-        val menu = compactButton("☰", 34) {
+
+        val menu = actionButton("☰", 48) {
             controls.visibility = if (controls.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            updatePendingLearningButtons()
         }
-        controls.addView(compactButton("영역", 42) { beginRegionSelection() })
-        controls.addView(compactButton("A−", 32) { changeOverlayTextSize(-1f) })
-        controls.addView(compactButton("A+", 32) { changeOverlayTextSize(1f) })
-        controls.addView(compactButton("투", 30) { cycleOverlayAlpha() })
-        controls.addView(compactButton("자", 30) { toggleAutoHeight() })
-        controls.addView(compactButton("화", 30) { toggleSpeakerDisplayMode() })
-        controls.addView(compactButton("재", 30) { retryLastTranslation() })
-        controls.addView(compactButton("좋", 30) { recordPositiveFeedback() })
-        controls.addView(compactButton("수정", 38) { showCorrectionDialog() })
-        controls.addView(compactButton("화+", 34) { approveSpeakerCandidate() })
-        controls.addView(compactButton("용+", 34) { approveAliasCandidate() })
-        controls.addView(compactButton("숨", 30) { toggleResultVisibility() })
-        controls.addView(compactButton("■", 30) { stopSelf() })
+
+        primaryRow.addView(actionButton("영역", 60) { beginRegionSelection() })
+        primaryRow.addView(actionButton("A−", 48) { changeOverlayTextSize(-1f) })
+        primaryRow.addView(actionButton("A+", 48) { changeOverlayTextSize(1f) })
+        primaryRow.addView(actionButton("투명", 52) { cycleOverlayAlpha() })
+        primaryRow.addView(actionButton("높이", 52) { toggleAutoHeight() })
+        primaryRow.addView(actionButton("이름", 52) { toggleSpeakerDisplayMode() })
+        primaryRow.addView(actionButton("다시", 52) { retryLastTranslation() })
+
+        learningRow.addView(actionButton("좋음", 52) { recordPositiveFeedback() })
+        learningRow.addView(actionButton("수정", 60) { showCorrectionDialog() })
+        speakerApproveButton = actionButton("화자등록", 78) { approveSpeakerCandidate() }.also {
+            learningRow.addView(it)
+        }
+        aliasApproveButton = actionButton("용어등록", 78) { approveAliasCandidate() }.also {
+            learningRow.addView(it)
+        }
+        learningRow.addView(actionButton("숨김", 52) { toggleResultVisibility() })
+        learningRow.addView(actionButton("종료", 52) { stopSelf() })
+
+        controls.addView(primaryRow)
+        controls.addView(learningRow)
         root.addView(menu)
         root.addView(controls)
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -642,6 +697,7 @@ class ScreenOcrService : Service() {
         }
         windowManager.addView(root, params)
         controlView = root
+        updatePendingLearningButtons()
     }
 
     private fun toggleResultVisibility() {
@@ -680,7 +736,7 @@ class ScreenOcrService : Service() {
                 setPadding(dp(6), dp(2), dp(6), dp(2))
             }
             header.addView(dragHandle, LinearLayout.LayoutParams(0, dp(26), 1f))
-            header.addView(resizeHandle, LinearLayout.LayoutParams(dp(70), dp(26)))
+            header.addView(resizeHandle, LinearLayout.LayoutParams(dp(86), dp(26)))
             val textView = TextView(this).apply {
                 setTextColor(Color.WHITE)
                 textSize = overlayTextSizeSp
@@ -765,28 +821,45 @@ class ScreenOcrService : Service() {
         val minHeight = (80 * density).toInt()
         val maxWidth = (screenWidth * 0.995f).toInt()
         val maxHeight = (screenHeight * 0.92f).toInt()
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downRawX = 0f
         var downRawY = 0f
         var startWidth = 0
         var startHeight = 0
+        var resizing = false
         handle.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    if (autoHeightEnabled) {
-                        autoHeightEnabled = false
-                        OverlaySettingsStore.saveAutoHeight(this, false)
-                        Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
-                    }
-                    downRawX = event.rawX; downRawY = event.rawY; startWidth = params.width; startHeight = params.height; true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    params.width = (startWidth + (event.rawX - downRawX).toInt()).coerceIn(minWidth, maxWidth)
-                    params.height = (startHeight + (event.rawY - downRawY).toInt()).coerceIn(minHeight, maxHeight)
-                    clampResultGeometry(params)
-                    windowManager.updateViewLayout(container, params)
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startWidth = params.width
+                    startHeight = params.height
+                    resizing = false
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { saveOverlayGeometry(params); true }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (!resizing && kotlin.math.hypot(dx.toDouble(), dy.toDouble()) >= touchSlop) {
+                        resizing = true
+                        if (autoHeightEnabled) {
+                            autoHeightEnabled = false
+                            OverlaySettingsStore.saveAutoHeight(this, false)
+                            Toast.makeText(this, "직접 크기 조절 · 자동 높이 OFF", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    if (resizing) {
+                        params.width = (startWidth + dx.toInt()).coerceIn(minWidth, maxWidth)
+                        params.height = (startHeight + dy.toInt()).coerceIn(minHeight, maxHeight)
+                        clampResultGeometry(params)
+                        windowManager.updateViewLayout(container, params)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (resizing) saveOverlayGeometry(params)
+                    true
+                }
                 else -> false
             }
         }
@@ -845,6 +918,7 @@ class ScreenOcrService : Service() {
                 lastResultSpeakerTarget = null
                 lastDisplayedSpeakerTarget = null
                 OpenAiTranslationProvider.clearDialogueContext()
+                updatePendingLearningButtons()
                 endRegionSelection()
                 showResultOverlay("영역 지정 완료 · 일본어를 인식 중입니다")
             },
@@ -882,6 +956,8 @@ class ScreenOcrService : Service() {
         resultView = null
         resultParams = null
         controlView = null
+        speakerApproveButton = null
+        aliasApproveButton = null
     }
 
     private fun releaseProjectionResources(stopProjection: Boolean) {
