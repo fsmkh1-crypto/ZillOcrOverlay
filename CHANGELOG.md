@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 - 2026-08-23
+
+### Added
+
+- Room 2.8.4 + KSP 기반 영구 번역 캐시
+- 원문, 번역문, 사용 모델, 최초 생성일, 마지막 사용일, 사용 횟수 저장
+- 앱 종료/재실행 후에도 동일 일본어 원문 번역 재사용
+- 사용자 편집 용어집 CRUD UI
+- `ロストール → 로스토르`, `ソウル → 소울`, `インフィニティア → 인피니티아` 최초 기본 시드
+- 현재 대사/직전 문맥에 실제 포함된 용어만 프롬프트에 주입
+- 최근 번역 기록 최대 30개 조회
+- 전체 번역 캐시 삭제 기능
+
+### Changed
+
+- 번역 경로를 `메모리 캐시 → Room 영구 캐시 → OpenRouter` 순서로 변경
+- 용어 추가/수정/삭제 시 해당 일본어 용어가 포함된 기존 번역 캐시만 선택 무효화
+- 앱 설정 화면을 ScrollView로 변경
+- 버전 0.3.0 / versionCode 6
+
+### Validation
+
+- Room/KSP 포함 GitHub Actions `assembleDebug` 성공
+- debug APK artifact 업로드 성공
+- POCO X8 Pro Max 실기기 영구 캐시/용어집 검증 예정
+
 ## 0.2.3 - 2026-08-23
 
 ### Fixed
@@ -19,8 +45,8 @@
 
 ### Validation
 
-- GitHub Actions `assembleDebug` 검증 예정
-- POCO X8 Pro Max + HyperOS에서 전체 화면 캡처 동의창 및 PPSSPP 오버레이 재검증 예정
+- GitHub Actions `assembleDebug` 성공
+- POCO X8 Pro Max + HyperOS 실기기 확인 진행
 
 ## 0.2.2 - 2026-08-23
 
@@ -29,25 +55,18 @@
 - 같은 대사에서 ML Kit OCR 결과가 프레임마다 미세하게 흔들리며 번역/자막이 반복 갱신되던 현상 완화
 - 새 OCR 문장은 유사한 결과가 2회 연속 확인된 뒤에만 확정
 - 확정된 문장과 약 86% 이상 유사한 OCR 결과는 같은 대사로 간주해 재번역 억제
-- 자막 텍스트가 실제로 바뀌지 않으면 TextView 값을 다시 설정하지 않음
-- 자막 위치가 실제로 바뀌지 않으면 `updateViewLayout()`을 호출하지 않음
-- OpenRouter가 `content: null` 또는 빈 completion을 반환할 때 화면에 `null`이 표시되던 문제 수정
+- 자막 텍스트/위치가 실제로 바뀌지 않으면 불필요한 View 갱신 억제
+- OpenRouter `content: null`/빈 completion 처리
 
 ### Changed
 
-- OpenRouter 빈 응답은 1회 자동 재시도
-- OpenRouter 요청에 reasoning 비활성화 옵션 추가
-- 빈 응답이 계속되면 실제 응답 모델명과 `finish_reason`을 오류 문구에 포함
+- OpenRouter 빈 응답 1회 자동 재시도
+- reasoning 비활성화 옵션 추가
 - 버전 0.2.2 / versionCode 4
-
-### Trade-off
-
-- 새 대사 확정에 OCR 한 주기(기본 약 500ms)가 추가로 필요할 수 있으나, 자막 안정성을 우선함
 
 ### Validation
 
 - GitHub Actions `assembleDebug` 성공
-- POCO X8 Pro Max 실기기 깜빡임 재검증 예정
 
 ## 0.2.1 - 2026-08-23
 
@@ -55,53 +74,38 @@
 
 - 번역 API를 OpenAI 직접 호출에서 OpenRouter로 전환
 - 기본 모델을 `openrouter/free`로 변경
-- 앱 내 API 키 발급 링크를 OpenRouter 키 페이지로 변경
 - OpenRouter 모델 slug를 앱에서 직접 지정 가능
 
 ### Added
 
-- 동일 일본어 원문에 대한 실행 중 메모리 LRU 캐시(최대 256개)
+- 실행 중 메모리 LRU 캐시 최대 256개
 - OpenRouter `HTTP-Referer` / `X-Title` 헤더
-
-### Notes
-
-- 무료 계정은 호출 제한이 있으므로 테스트용에 적합함
-- `openrouter/free`는 무료 모델을 자동 선택하므로 번역 품질/말투가 호출마다 달라질 수 있음
-- 영구 Room 캐시는 아직 미구현
 
 ### Validation
 
 - GitHub Actions `assembleDebug` 성공
 - POCO X8 Pro Max 실기기 OpenRouter 번역 동작 확인
-- 동일 대사에서 자막 깜빡임 현상 확인 → 0.2.2에서 수정
 
 ## 0.2.0 - 2026-08-23
 
 ### Added
 
-- OpenAI Responses API 기반 일본어 → 한국어 번역
+- API 번역 파이프라인
 - `TranslationProvider` 추상화
-- 앱 내 API 키 및 모델 설정 UI
-- 직전 일본어 대사 최대 2개를 짧은 문맥으로 전달
-- 번역 요청 전용 단일 백그라운드 executor
-- 번역 중 새 OCR 발생 시 오래된 요청을 누적하지 않고 최신 요청 1개만 대기
+- 앱 내 API 키/모델 설정 UI
+- 직전 일본어 대사 최대 2개 문맥 전달
+- 번역 요청 전용 백그라운드 executor
 - `INTERNET` 권한
 
 ### Changed
 
-- OCR 결과 대신 한국어 번역문을 기본 오버레이로 표시
-- 대화창이 화면 아래쪽에 있을 때 번역 자막을 화면 상단으로 이동
-- 결과 자막 폭을 화면 약 74%로 축소해 우측 플로팅 컨트롤과 겹침 완화
-
-### Safety / capture isolation
-
-- 결과 자막, 플로팅 컨트롤, 영역 선택 오버레이에 `FLAG_SECURE` 적용
-- 자기 오버레이가 MediaProjection 입력에 다시 잡히는 현상을 억제하도록 변경
+- 한국어 번역문을 기본 오버레이로 표시
+- 번역 자막을 OCR ROI 바깥에 배치
+- 오버레이에 `FLAG_SECURE` 적용
 
 ### Validation
 
-- 0.2.0 GitHub Actions `assembleDebug` 성공
-- debug APK artifact 업로드 성공
+- GitHub Actions `assembleDebug` 성공
 
 ## 0.1.0 - 2026-08-23
 
@@ -109,22 +113,15 @@
 
 - Kotlin Android 프로젝트 생성
 - Android 16 `compileSdk/targetSdk 36`
-- MediaProjection 화면 캡처 동의 플로우
-- MediaProjection Foreground Service
-- `SYSTEM_ALERT_WINDOW` 권한 처리
-- PPSSPP 위 플로팅 영역 선택/중지 컨트롤
-- 드래그 기반 OCR 영역 선택
-- SharedPreferences 기반 정규화 ROI 저장
-- ImageReader 기반 화면 캡처
+- MediaProjection 화면 캡처
+- Foreground Service
+- 오버레이 권한
+- 드래그 OCR 영역 선택
 - 500ms OCR throttle
-- Google ML Kit 일본어 Text Recognition v2 번들 모델
-- OCR 결과 오버레이 표시
-- 동일 OCR 텍스트 UI 갱신 억제
-- README / TODO / ARCHITECTURE / CHANGELOG 문서화
-- GitHub Actions 기반 debug APK 자동 빌드 구성
+- Google ML Kit 일본어 OCR
+- GitHub Actions debug APK 자동 빌드
 
 ### Validation
 
 - GitHub Actions 실제 `assembleDebug` 성공
-- `app-debug.apk` artifact 생성 및 업로드 성공
 - POCO X8 Pro Max + PPSSPP + Zill O’ll 일본어 OCR 실기기 동작 확인
