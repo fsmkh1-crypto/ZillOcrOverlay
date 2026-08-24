@@ -19,6 +19,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout upstream Zill toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: HK47196/zill
+          path: upstream-zill
+          fetch-depth: 1
+
+      - name: Analyze authenticated upstream font delta
+        run: |
+          python3 korean_patch/poc/analyze_font_zpatch.py \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --json font-zpatch-analysis.json
+          echo '### zillfont XOR analysis' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload font analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: zillfont-zpatch-analysis
+          path: font-zpatch-analysis.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -63,6 +88,7 @@ jobs:
           mkdir -p claude-review
           cp -R app/src claude-review/app-src
           cp -R patcher/src claude-review/patcher-src
+          cp -R korean_patch claude-review/korean-patch
           cp app/build.gradle.kts claude-review/app-build.gradle.kts
           cp patcher/build.gradle.kts claude-review/patcher-build.gradle.kts
           cp build.gradle.kts settings.gradle.kts gradle.properties claude-review/
@@ -70,12 +96,15 @@ jobs:
           cat > claude-review/CLAUDE_REVIEW_NOTES.md <<'EOF'
           # Zill OCR Overlay + Korean patcher review package
 
-          Review the current branch as an Android/Kotlin code review. Classify findings as **must fix / recommended / optional**.
+          Review the current branch as an Android/Kotlin/Python code review. Classify findings as **must fix / recommended / optional**.
 
-          Focus additionally on the standalone `patcher` module:
+          Focus additionally on the standalone `patcher` module and Korean font PoC:
           - safe read-only ISO9660 traversal
           - PAA member 13611 extraction
           - ULJM05410 v1.03 zillfont.par SHA-256 validation
+          - authenticated upstream zpatch reconstruction
+          - PAR section parsing and conservative XOR pattern analysis
+          - no assumption that metrics numeric sort order equals physical glyph order
           - no modification/upload of the source ISO
           - separation from the OCR overlay application
           EOF
