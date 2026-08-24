@@ -11,6 +11,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ZillOcrOverlay">
         <activity
+            android:name=".FontDiagnosticsActivity"
+            android:exported="false"
+            android:label="질올 한글패치 · 폰트 진단" />
+        <activity
             android:name=".LearningManagerActivity"
             android:exported="false"
             android:label="화자 · 학습 관리" />
