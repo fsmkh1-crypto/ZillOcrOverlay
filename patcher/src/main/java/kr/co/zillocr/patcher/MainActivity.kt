@@ -30,6 +30,22 @@ class MainActivity : ComponentActivity() {
     private lateinit var atlasContainer: LinearLayout
     private var latestReport: String = ""
 
+    private data class MappingCell(
+        val label: String,
+        val expected: String,
+        val metricKey: String,
+        val ordinal: Int,
+    )
+
+    private val mappingCells = listOf(
+        MappingCell("ASCII sanity", "0", "0x0030", 17),
+        MappingCell("ASCII sanity", "A", "0x0041", 33),
+        MappingCell("ASCII sanity", "a", "0x0061", 64),
+        MappingCell("surrogate 아", "腑", "0x44e4", 223),
+        MappingCell("surrogate 이", "躙", "0x57e7", 486),
+        MappingCell("surrogate 템", "綺", "0x59e3", 511),
+    )
+
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
         try {
@@ -50,7 +66,16 @@ class MainActivity : ComponentActivity() {
                         channel.position(0)
                         val exact = ExactGimIsoAnalyzer.analyze(channel, patch.xor)
                         exactPreviews = exact.previews
-                        result.toReport() + "\n\n" + exact.report
+                        buildString {
+                            append(result.toReport())
+                            append("\n\n")
+                            append(exact.report)
+                            val mapping = metricOrderMappingReport(exactPreviews)
+                            if (mapping.isNotBlank()) {
+                                append("\n\n")
+                                append(mapping)
+                            }
+                        }
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -90,7 +115,7 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "PoC 0.4 · 폰트 인증 + 영문 재구성 + 정확한 PAR/GIM 분석\nOCR 번역기와 별개의 독립 패처 앱입니다."
+            text = "PoC 0.5 · 정확한 PAR/GIM + metrics→cell 매핑 검증\nOCR 번역기와 별개의 독립 패처 앱입니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -137,10 +162,79 @@ class MainActivity : ComponentActivity() {
     ) {
         atlasContainer.removeAllViews()
         if (exact.isNotEmpty()) {
+            renderMetricOrderCandidateCrops(exact)
             renderExactGimPreviews(exact)
         } else {
             renderHeuristicPreviews(heuristic)
         }
+    }
+
+    private fun renderMetricOrderCandidateCrops(previews: List<GimFontProbe.Preview>) {
+        val page0 = previews.firstOrNull { it.sectionIndex == 0 && it.image.width == 512 && it.image.height == 512 }
+            ?: return
+
+        atlasContainer.addView(TextView(this).apply {
+            text = "metrics.toml → 16×16 cell 검증"
+            textSize = 19f
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        atlasContainer.addView(TextView(this).apply {
+            text = "metrics.toml의 텍스트 순서가 32×32 row-major 글리프 셀 순서라는 가설을 직접 확인합니다. 먼저 0/A/a가 맞는지, 이어서 후보 셀이 腑/躙/綺로 보이는지 확인하세요."
+            textSize = 13f
+            setPadding(0, 8, 0, 10)
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        mappingCells.forEach { cell ->
+            val cellX = cell.ordinal % 32
+            val cellY = cell.ordinal / 32
+            atlasContainer.addView(TextView(this).apply {
+                text = "${cell.label} · expected '${cell.expected}' · ${cell.metricKey} · ordinal=${cell.ordinal} · cell=($cellX,$cellY)"
+                textSize = 14f
+                setPadding(0, 12, 0, 4)
+            }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            atlasContainer.addView(
+                argbCropImageView(page0.retailArgb, 512, 512, cellX * 16, cellY * 16, 16, 16),
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+    }
+
+    private fun metricOrderMappingReport(previews: List<GimFontProbe.Preview>): String {
+        val page0 = previews.firstOrNull { it.sectionIndex == 0 && it.image.width == 512 && it.image.height == 512 }
+            ?: return ""
+        return buildString {
+            appendLine("metrics.toml textual-order -> 16x16 cell hypothesis")
+            appendLine("page 0: 512x512 => 32x32 cells, 1024 cells/page")
+            appendLine("visual proof targets (retail child 0 crops shown in app):")
+            mappingCells.forEach { cell ->
+                val cellX = cell.ordinal % 32
+                val cellY = cell.ordinal / 32
+                val nonTransparent = cropNonTransparentPixels(page0.retailArgb, 512, cellX * 16, cellY * 16, 16, 16)
+                appendLine(
+                    "  ${cell.metricKey} expected=${cell.expected} ordinal=${cell.ordinal} " +
+                        "cell=($cellX,$cellY) nonTransparentPixels=$nonTransparent"
+                )
+            }
+            append("NOTE: ordering is confirmed only if the displayed retail crops visually match the expected characters.")
+        }
+    }
+
+    private fun cropNonTransparentPixels(
+        argb: IntArray,
+        width: Int,
+        x0: Int,
+        y0: Int,
+        cropWidth: Int,
+        cropHeight: Int,
+    ): Int {
+        var count = 0
+        for (y in y0 until y0 + cropHeight) {
+            for (x in x0 until x0 + cropWidth) {
+                if ((argb[y * width + x] ushr 24) and 0xff != 0) count++
+            }
+        }
+        return count
     }
 
     private fun renderExactGimPreviews(previews: List<GimFontProbe.Preview>) {
@@ -149,6 +243,7 @@ class MainActivity : ComponentActivity() {
         atlasContainer.addView(TextView(this).apply {
             text = "Exact PAR/GIM decode"
             textSize = 18f
+            setPadding(0, 20, 0, 0)
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         atlasContainer.addView(TextView(this).apply {
@@ -198,6 +293,25 @@ class MainActivity : ComponentActivity() {
         adjustViewBounds = true
         scaleType = ImageView.ScaleType.FIT_CENTER
         setImageBitmap(Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888))
+    }
+
+    private fun argbCropImageView(
+        argb: IntArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        cropWidth: Int,
+        cropHeight: Int,
+    ): ImageView = ImageView(this).apply {
+        adjustViewBounds = true
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        val source = Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
+        val crop = Bitmap.createBitmap(source, x, y, cropWidth, cropHeight)
+        val scaled = Bitmap.createScaledBitmap(crop, cropWidth * 12, cropHeight * 12, false)
+        setImageBitmap(scaled)
+        source.recycle()
+        crop.recycle()
     }
 
     private fun grayImageView(gray: ByteArray, width: Int, height: Int): ImageView = ImageView(this).apply {
