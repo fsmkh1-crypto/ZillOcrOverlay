@@ -35,9 +35,16 @@ jobs:
             upstream-zill/release/font/font-zillfont.zpatch \
             --outdir font-delta-atlas \
             --json font-delta-atlas.json
+          python3 korean_patch/poc/analyze_otf_cmap_mapping.py \
+            upstream-zill/release/font/fs-tahoma-8px.otf \
+            --json otf-cmap-mapping.json
           echo '### zillfont XOR analysis' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo '### OTF cmap / physical atlas diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat otf-cmap-mapping.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Inspect upstream font history
@@ -71,6 +78,7 @@ jobs:
             font-delta-atlas.json
             font-delta-atlas/
             upstream-font-history.txt
+            otf-cmap-mapping.json
           if-no-files-found: error
           retention-days: 14
 
