@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -22,7 +23,9 @@ import kr.co.zillocr.patcher.patch.FontAtlasProbe
 import kr.co.zillocr.patcher.patch.FontGlyphMatcher
 import kr.co.zillocr.patcher.patch.GimFontProbe
 import kr.co.zillocr.patcher.patch.UpstreamFontPatch
+import kr.co.zillocr.patcher.patch.UpstreamSourceFont
 import kr.co.zillocr.patcher.patch.ZillFontIsoAnalyzer
+import java.io.File
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
@@ -41,7 +44,7 @@ class MainActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ISO · GIM · 글리프 형태 매칭 분석 중…"
+        statusView.text = "ISO · GIM · upstream 원본 글꼴 매칭 분석 중…"
         atlasContainer.removeAllViews()
         executor.execute {
             var heuristicPreviews: List<FontAtlasProbe.Preview> = emptyList()
@@ -49,6 +52,10 @@ class MainActivity : ComponentActivity() {
             var matches: Map<String, List<FontGlyphMatcher.Match>> = emptyMap()
             val report = try {
                 val patch = UpstreamFontPatch.download()
+                val sourceFontBytes = UpstreamSourceFont.download()
+                val sourceFontFile = File(cacheDir, "fs-tahoma-8px-authenticated.otf")
+                sourceFontFile.writeBytes(sourceFontBytes)
+                val sourceTypeface = Typeface.createFromFile(sourceFontFile)
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                     FileInputStream(pfd.fileDescriptor).channel.use { channel ->
                         val result = ZillFontIsoAnalyzer.analyze(channel, patch.xor)
@@ -56,10 +63,13 @@ class MainActivity : ComponentActivity() {
                         channel.position(0)
                         val exact = ExactGimIsoAnalyzer.analyze(channel, patch.xor)
                         exactPreviews = exact.previews
-                        // Keep the complete ranking so the three known ASCII cells can be
-                        // measured objectively even when they do not appear in Top 8.
-                        matches = FontGlyphMatcher.rank(exactPreviews, matchTargets, topN = 3072)
-                        result.toReport() + "\n\n" + exact.report + "\n\n" + matcherReport(matches)
+                        matches = FontGlyphMatcher.rank(
+                            exactPreviews,
+                            matchTargets,
+                            topN = 3072,
+                            typeface = sourceTypeface,
+                        )
+                        result.toReport() + "\n\n" + exact.report + "\n\n" + sourceFontReport() + "\n\n" + matcherReport(matches)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -93,12 +103,12 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 0.8 · 물리 글리프 검색 정량 검증\n0/A/a의 실제 셀 순위를 전체 3,072셀에서 계산합니다."
+            text = "PoC 0.9 · upstream 원본 글꼴 기반 매칭\nAndroid 기본 글꼴 대신 인증된 fs-tahoma-8px.otf로 0/A/a를 재검증합니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · 글리프 형태 검색"
+            text = "원본 ISO 선택 · 원본 글꼴 매칭"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -142,7 +152,7 @@ class MainActivity : ComponentActivity() {
     ) {
         if (matches.isEmpty()) return
         atlasContainer.addView(TextView(this).apply {
-            text = "물리 글리프 형태 검색 · Top 8"
+            text = "upstream 원본 글리프 형태 검색 · Top 8"
             textSize = 20f
         })
         atlasContainer.addView(TextView(this).apply {
@@ -219,11 +229,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun sourceFontReport(): String = buildString {
+        appendLine("authenticated upstream source font")
+        appendLine("name: release/font/fs-tahoma-8px.otf")
+        appendLine("size: ${UpstreamSourceFont.EXPECTED_SIZE}")
+        append("git blob SHA-1: ${UpstreamSourceFont.EXPECTED_GIT_BLOB_SHA1} (match required before use)")
+    }
+
     private fun matcherReport(matches: Map<String, List<FontGlyphMatcher.Match>>): String = buildString {
-        appendLine("visual glyph matcher (heuristic; metrics textual order is NOT physical cell order)")
+        appendLine("visual glyph matcher (authenticated upstream source typeface; metrics order is NOT physical cell order)")
         appendLine("known physical ASCII anchors: 0=s0:16, A=s0:31, a=s0:60")
         appendLine(asciiValidationSummary(matches).replace("\n", " | "))
-        appendLine("upstream note: metrics.toml is an advance/repertoire table; DBCS keys are encoded-byte values, not atlas ordinals")
         matchTargets.forEach { target ->
             append("  $target:")
             matches[target].orEmpty().take(8).forEach { m ->
