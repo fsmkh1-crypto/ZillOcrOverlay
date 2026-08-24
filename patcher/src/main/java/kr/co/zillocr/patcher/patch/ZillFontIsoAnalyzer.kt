@@ -48,6 +48,7 @@ object ZillFontIsoAnalyzer {
         val changedRuns: Int? = null,
         val longestRuns: List<Run> = emptyList(),
         val changedOffsetMod16: List<Int> = emptyList(),
+        val patternReport: String? = null,
     ) {
         fun toReport(): String = buildString {
             appendLine("Zill O'll Infinite Plus Korean patch · font diagnostics")
@@ -95,6 +96,10 @@ object ZillFontIsoAnalyzer {
                 longestRuns.forEach { run ->
                     appendLine("  0x${run.start.toString(16).uppercase()}..0x${run.endExclusive.toString(16).uppercase()} (${run.length} bytes)")
                 }
+                if (!patternReport.isNullOrBlank()) {
+                    appendLine()
+                    appendLine(patternReport)
+                }
             }
         }
     }
@@ -129,6 +134,9 @@ object ZillFontIsoAnalyzer {
                 for (i in xorPatch.indices) if (xorPatch[i].toInt() != 0) histogram[i and 0x0f]++
             }.toList()
         } else emptyList()
+        val patterns = if (xorPatch != null && par != null) {
+            FontPatternAnalysis.report(xorPatch, par.sections)
+        } else null
 
         return Result(
             paBinSize = paBin.size,
@@ -150,6 +158,7 @@ object ZillFontIsoAnalyzer {
             changedRuns = xorPatch?.let { runs.size },
             longestRuns = longest,
             changedOffsetMod16 = mod16,
+            patternReport = patterns,
         )
     }
 
