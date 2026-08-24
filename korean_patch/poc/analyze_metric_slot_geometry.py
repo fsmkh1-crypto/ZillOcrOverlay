@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Test a 15x16 metric-slot atlas geometry against device-observed ASCII anchors.
+"""Validate 15x16 atlas geometry and CP932 encoded-byte physical ordering.
 
-The previous 16x16/32-column interpretation treated each metrics.toml ordinal as a
-16-pixel cell and appeared inconsistent. The user's exact GIM screenshot instead
-shows a drift pattern that is explained exactly by 15-pixel-wide glyph slots:
-512 / 15 = 34 full slots (510 px) per row, 32 rows at 16 px height.
+The 15x16 geometry is already supported by device screenshots. The previous
+non-ASCII ordinal prediction incorrectly used metrics.toml's textual/numeric key
+order. Two-byte metric keys are byte-reversed identifiers (E4 44 -> 0x44e4), so
+numeric key order groups by the second CP932 byte and cannot be assumed to be the
+atlas order.
 
-This probe is deliberately narrow. It does not claim that textual metrics order is
-physical order merely because ordinals exist. It requires several independently
-observed ASCII glyphs to land in the same 16x16 pseudo-cells shown by the earlier
-device probe before it emits non-ASCII slot predictions.
+This probe reconstructs each key's actual CP932 byte sequence, sorts by those
+encoded bytes, checks the known ASCII anchors, then emits CJK slot candidates.
+CJK still requires an on-device visual crop check before any write is enabled.
 """
 from __future__ import annotations
 
@@ -27,33 +27,27 @@ ROWS = HEIGHT // SLOT_H        # 32
 SLOTS_PER_PAGE = COLS * ROWS   # 1088
 KEY_RE = re.compile(r'^"(0x[0-9A-Fa-f]{4})"\s*=')
 
-# Empirical anchors read directly from the user's PoC 0.6 screenshot.  These are
-# the labels of the old 16x16/32-column diagnostic crops in which the glyph is
-# visibly centered/contained. They are evidence only, not generated assumptions.
-OBSERVED_PSEUDO_CELLS = {
-    0x0029: 9,   # ')'
-    0x0030: 16,  # '0'
-    0x003A: 25,  # ':'
-    0x0041: 31,  # 'A'
-    0x005C: 56,  # '\\'
-    0x0061: 60,  # 'a'
+EXPECTED_ASCII_ORDINALS = {
+    0x0030: 17,  # 0
+    0x0041: 33,  # A
+    0x0061: 64,  # a
 }
 
 TARGETS = {
     "0": 0x0030,
     "A": 0x0041,
     "a": 0x0061,
-    "ア": 0x4183,
-    "イ": 0x4383,
-    "テ": 0x6583,
-    "ム": 0x8083,
-    "surrogate_아_腑": 0x44E4,
-    "surrogate_이_躙": 0x57E7,
-    "surrogate_템_綺": 0x59E3,
+    "ア": 0x4183,  # CP932 83 41
+    "イ": 0x4383,  # CP932 83 43
+    "テ": 0x6583,  # CP932 83 65
+    "ム": 0x8083,  # CP932 83 80
+    "surrogate_아_腑": 0x44E4,  # CP932 E4 44
+    "surrogate_이_躙": 0x57E7,  # CP932 E7 57
+    "surrogate_템_綺": 0x59E3,  # CP932 E3 59
 }
 
 
-def parse_metric_order(path: Path) -> list[int]:
+def parse_keys(path: Path) -> list[int]:
     result: list[int] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         m = KEY_RE.match(line.strip())
@@ -66,28 +60,24 @@ def parse_metric_order(path: Path) -> list[int]:
     return result
 
 
+def cp932_bytes_for_key(key: int) -> bytes:
+    if key <= 0xFF:
+        return bytes([key])
+    return bytes([key & 0xFF, (key >> 8) & 0xFF])
+
+
 def slot_for_ordinal(ordinal: int) -> dict[str, int]:
     page = ordinal // SLOTS_PER_PAGE
     local = ordinal % SLOTS_PER_PAGE
     row = local // COLS
     col = local % COLS
-    x = col * SLOT_W
-    y = row * SLOT_H
-    # Map the center of the proposed 15x16 slot back into the old 16x16/32-col
-    # diagnostic coordinate system, which is what the screenshots label.
-    center_x = x + SLOT_W // 2
-    center_y = y + SLOT_H // 2
-    pseudo_col = center_x // 16
-    pseudo_row = center_y // 16
-    pseudo_cell = pseudo_row * 32 + pseudo_col
     return {
         "page": page,
         "local_slot": local,
         "row": row,
         "col": col,
-        "x": x,
-        "y": y,
-        "pseudo_16x16_cell_by_center": pseudo_cell,
+        "x": col * SLOT_W,
+        "y": row * SLOT_H,
     }
 
 
@@ -97,45 +87,39 @@ def main() -> None:
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
 
-    order = parse_metric_order(args.metrics)
-    positions = {key: i for i, key in enumerate(order)}
+    keys = parse_keys(args.metrics)
+    ordered = sorted(keys, key=cp932_bytes_for_key)
+    positions = {key: i for i, key in enumerate(ordered)}
 
     anchors = []
-    for key, observed in OBSERVED_PSEUDO_CELLS.items():
+    for key, expected in EXPECTED_ASCII_ORDINALS.items():
         ordinal = positions.get(key)
-        if ordinal is None:
-            anchors.append({"key": f"0x{key:04x}", "present": False, "observed": observed})
-            continue
-        slot = slot_for_ordinal(ordinal)
         anchors.append({
             "key": f"0x{key:04x}",
-            "char": bytes([key]).decode("ascii") if key < 0x80 else None,
-            "present": True,
-            "metrics_ordinal": ordinal,
-            "observed_pseudo_cell": observed,
-            "predicted_pseudo_cell": slot["pseudo_16x16_cell_by_center"],
-            "match": slot["pseudo_16x16_cell_by_center"] == observed,
-            "slot": slot,
+            "char": chr(key),
+            "encoded_hex": cp932_bytes_for_key(key).hex(" ").upper(),
+            "ordinal": ordinal,
+            "expected_ordinal": expected,
+            "match": ordinal == expected,
+            "slot": slot_for_ordinal(ordinal) if ordinal is not None else None,
         })
-
-    passed = len(anchors) == len(OBSERVED_PSEUDO_CELLS) and all(a.get("match") for a in anchors)
+    passed = all(a["match"] for a in anchors)
 
     targets = {}
     for label, key in TARGETS.items():
         ordinal = positions.get(key)
-        if ordinal is None:
-            targets[label] = {"key": f"0x{key:04x}", "present": False}
-            continue
         targets[label] = {
             "key": f"0x{key:04x}",
-            "present": True,
-            "metrics_ordinal": ordinal,
-            "slot_prediction": slot_for_ordinal(ordinal) if passed else None,
+            "encoded_hex": cp932_bytes_for_key(key).hex(" ").upper(),
+            "present": ordinal is not None,
+            "cp932_order_ordinal": ordinal,
+            "slot_prediction": slot_for_ordinal(ordinal) if passed and ordinal is not None else None,
         }
 
     report = {
-        "metrics_glyphs": len(order),
-        "geometry_hypothesis": {
+        "metrics_glyphs": len(keys),
+        "ordering": "actual CP932 encoded bytes, lexicographic unsigned order",
+        "geometry": {
             "slot_width": SLOT_W,
             "slot_height": SLOT_H,
             "texture_width": WIDTH,
@@ -145,13 +129,12 @@ def main() -> None:
             "slots_per_page": SLOTS_PER_PAGE,
             "unused_right_edge_pixels": WIDTH - COLS * SLOT_W,
         },
-        "device_anchor_validation_pass": passed,
+        "ascii_anchor_validation_pass": passed,
         "anchors": anchors,
         "targets": targets,
         "interpretation": (
-            "PASS means the 15x16/34-column geometry reproduces every recorded ASCII screenshot anchor. "
-            "It supports, but does not by itself prove, that metrics textual order is the complete physical glyph order; "
-            "the next on-device probe must crop the exact 15x16 predicted slots and visually validate 0/A/a before surrogate writes are enabled."
+            "ASCII PASS validates the ordering rule only for the known anchors. "
+            "Kana and surrogate kanji crops must visibly match on device before physical CJK slots are trusted."
         ),
     }
     text = json.dumps(report, ensure_ascii=False, indent=2)
