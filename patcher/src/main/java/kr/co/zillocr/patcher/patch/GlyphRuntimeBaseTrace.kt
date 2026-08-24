@@ -1,6 +1,6 @@
 package kr.co.zillocr.patcher.patch
 
-/** Read-only trace focused on the actual selector callers and the object that owns nodeBase/rootIndex. */
+/** PoC 2.7 read-only trace: follow the selector result into the glyph descriptor consumer. */
 object GlyphRuntimeBaseTrace {
     private val regs = arrayOf(
         "zero","at","v0","v1","a0","a1","a2","a3","t0","t1","t2","t3","t4","t5","t6","t7",
@@ -8,52 +8,53 @@ object GlyphRuntimeBaseTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("runtime glyph-node base origin trace v2")
-        appendLine("2.5 result: broad +0x10/+0x14 access scanning is too noisy. The useful facts are the selector contract and the allocator-result stores around 0x1F93xx/0x1F97xx.")
-        appendLine("This pass traces the selector's real direct callers, then dumps the candidate allocation/population functions that write pointers to +0x14.")
+        appendLine("runtime glyph descriptor trace v3")
+        appendLine("2.6 decisive result: selector file 0x1FA028 has exactly two real callers. In the main path, selectorArg=a1=s4 is returned by file 0x1F9CF4, while a0=s5 is returned by file 0x1F9CA0. The selector result is immediately treated as a glyph descriptor: lbu +0x18, lh +0x0C, lh +0x0E.")
+        appendLine("This pass stops chasing generic +0x14 stores and follows that returned descriptor into file 0x1F9B14, where page/UV/geometry fields should reveal the physical atlas mapping.")
         appendLine()
 
-        appendLine("=== keyed selector contract ===")
-        dump(boot, 0x1FA028, 0x1FA054, setOf(0x1FA02C,0x1FA030,0x1FA038,0x1FA040,0x1FA044,0x1FA048))
+        appendLine("=== selector result consumption at caller #1 ===")
+        dump(boot, 0x1FA15C, 0x1FA1F4, setOf(0x1FA170,0x1FA180,0x1FA1A8,0x1FA1B0,0x1FA1C0,0x1FA1D8,0x1FA1DC))
 
         appendLine()
-        appendLine("=== DIRECT callers of selector entry file=0x1FA028 / va=0x1F9FA8 ===")
-        val selectorCallers = findJalCallers(boot, 0x1F9FA8)
-        appendLine("caller count=${selectorCallers.size}")
-        selectorCallers.take(32).forEachIndexed { i, off ->
+        appendLine("=== glyph descriptor consumer FULL: file 0x1F9B14 ===")
+        appendLine("call contract from 0x1FA1A8: a0=renderer state, a1=page/resource selected by descriptor[+0x18], a2=descriptor pointer")
+        dump(boot, 0x1F9B14, 0x1F9C9C, setOf(0x1F9B14))
+
+        appendLine()
+        appendLine("=== direct callers of glyph descriptor consumer va=0x1F9A94 ===")
+        val consumerCallers = findJalCallers(boot, 0x1F9A94)
+        appendLine("caller count=${consumerCallers.size}")
+        consumerCallers.take(16).forEachIndexed { i, off ->
             appendLine("  #${i+1} call file=${hex(off)} va=${hex(off-0x80)}")
-            dump(boot, maxOf(0,off-0x50), minOf(boot.size-4,off+0x40), setOf(off))
+            dump(boot, maxOf(0,off-0x34), minOf(boot.size-4,off+0x34), setOf(off))
         }
 
         appendLine()
-        appendLine("=== selector-neighbor full path ===")
-        appendLine("focus: function beginning at 0x1FA058 should reveal where selectorArg comes from and how returned record fields are consumed")
-        dump(boot, 0x1FA058, 0x1FA2B0, setOf(0x1FA058))
+        appendLine("=== selectorArg resolver FULL: file 0x1F9CF4 ===")
+        appendLine("2.6 path: 0x1FA098 calls this with a0=global/singleton from 0x1F9CA0 and a1=renderer state; returned v0 becomes s4 and is passed as selector a1.")
+        dump(boot, 0x1F9CF4, 0x1F9D58, setOf(0x1F9CF4))
 
         appendLine()
-        appendLine("=== candidate +0x14 allocation/population path A ===")
-        appendLine("notable stores: 0x1F9388 / 0x1F93B0 save allocator results to object+0x14")
-        dump(boot, 0x1F925C, 0x1F93D4, setOf(0x1F9388,0x1F93B0))
+        appendLine("=== singleton/base provider: file 0x1F9CA0 ===")
+        dump(boot, 0x1F9CA0, 0x1F9CF0, setOf(0x1F9CA0))
 
         appendLine()
-        appendLine("=== candidate +0x14 allocation/population path B ===")
-        appendLine("notable stores: 0x1F9718 / 0x1F976C save allocator results to object+0x14 and immediately copy data into them")
-        dump(boot, 0x1F94DC, 0x1F98BC, setOf(0x1F9718,0x1F9724,0x1F976C,0x1F977C))
-
-        appendLine()
-        appendLine("=== callers of candidate path A/B function entries ===")
-        val candidateEntries = listOf(0x1F91DC, 0x1F945C) // file offsets - 0x80
-        candidateEntries.forEach { va ->
-            val callers = findJalCallers(boot, va)
-            appendLine("target va=${hex(va)} file≈${hex(va+0x80)} callers=${callers.size}")
-            callers.take(16).forEach { off ->
-                appendLine("  call file=${hex(off)} va=${hex(off-0x80)}")
-                dump(boot,maxOf(0,off-0x30),minOf(boot.size-4,off+0x28),setOf(off))
-            }
+        appendLine("=== direct callers of selectorArg resolver va=0x1F9C74 ===")
+        val resolverCallers = findJalCallers(boot, 0x1F9C74)
+        appendLine("caller count=${resolverCallers.size}")
+        resolverCallers.take(24).forEachIndexed { i, off ->
+            appendLine("  #${i+1} call file=${hex(off)} va=${hex(off-0x80)}")
+            dump(boot, maxOf(0,off-0x40), minOf(boot.size-4,off+0x30), setOf(off))
         }
 
         appendLine()
-        appendLine("Decision rule: the right owner object must flow into file 0x1FA028 as a1, with +0x10 pointing to a structure whose +0x0C is a valid node index and +0x14 pointing to 0x20-byte keyed nodes. A candidate that only allocates textures/buffers but never reaches that selector is rejected. No writes are enabled.")
+        appendLine("=== keyed selector/lookup compact cross-check ===")
+        dump(boot, 0x1FA028, 0x1FA054, setOf(0x1FA02C,0x1FA030,0x1FA038,0x1FA044,0x1FA048))
+        dump(boot, 0x1F9F8C, 0x1FA024, setOf(0x1F9F9C,0x1F9FC4,0x1F9FD4,0x1F9FDC,0x1FA00C))
+
+        appendLine()
+        appendLine("Decision rule: if file 0x1F9B14 reads descriptor fields that directly determine texture page and U/V coordinates, derive slot=(page*1088)+(y/16*34)+(x/15) only after confirming coordinate units. Then validate against physical anchors 0->17, A->33, a->64 before touching kana/kanji. No writes are enabled.")
     }.trimEnd()
 
     private fun findJalCallers(data: ByteArray, targetVa: Int): List<Int> {
@@ -100,11 +101,15 @@ object GlyphRuntimeBaseTrace {
                 0x03 -> "sra ${r(rd)}, ${r(rt)}, $sa"
                 0x08 -> "jr ${r(rs)}"
                 0x09 -> "jalr ${r(rd)}, ${r(rs)}"
+                0x10 -> "mfhi ${r(rd)}"
                 0x12 -> "mflo ${r(rd)}"
                 0x18 -> "mult ${r(rs)}, ${r(rt)}"
+                0x1a -> "div ${r(rs)}, ${r(rt)}"
                 0x21 -> "addu ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x23 -> "subu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                0x24 -> "and ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x25 -> "or ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                0x27 -> "nor ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x2a -> "slt ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x2b -> "sltu ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 else -> "SPECIAL fn=0x${fn.toString(16)}"
@@ -123,6 +128,8 @@ object GlyphRuntimeBaseTrace {
             0x0f -> "lui ${r(rt)}, 0x${imm.toString(16).uppercase()}"
             0x14 -> "beql ${r(rs)}, ${r(rt)}, ${bt()}"
             0x15 -> "bnel ${r(rs)}, ${r(rt)}, ${bt()}"
+            0x16 -> "blezl ${r(rs)}, ${bt()}"
+            0x17 -> "bgtzl ${r(rs)}, ${bt()}"
             0x20 -> "lb ${r(rt)}, $simm(${r(rs)})"
             0x21 -> "lh ${r(rt)}, $simm(${r(rs)})"
             0x23 -> "lw ${r(rt)}, $simm(${r(rs)})"
@@ -131,6 +138,8 @@ object GlyphRuntimeBaseTrace {
             0x28 -> "sb ${r(rt)}, $simm(${r(rs)})"
             0x29 -> "sh ${r(rt)}, $simm(${r(rs)})"
             0x2b -> "sw ${r(rt)}, $simm(${r(rs)})"
+            0x31 -> "lwc1 f$rt, $simm(${r(rs)})"
+            0x39 -> "swc1 f$rt, $simm(${r(rs)})"
             else -> "op=0x${op.toString(16).uppercase()} rs=${r(rs)} rt=${r(rt)} imm=0x${imm.toString(16).uppercase()}"
         }
     }
