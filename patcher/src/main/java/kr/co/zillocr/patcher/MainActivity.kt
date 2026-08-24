@@ -44,7 +44,7 @@ class MainActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ISO · GIM · upstream 원본 글꼴 매칭 분석 중…"
+        statusView.text = "ISO · GIM · upstream 원본 글꼴 매핑 분석 중…"
         atlasContainer.removeAllViews()
         executor.execute {
             var heuristicPreviews: List<FontAtlasProbe.Preview> = emptyList()
@@ -69,7 +69,9 @@ class MainActivity : ComponentActivity() {
                             topN = 3072,
                             typeface = sourceTypeface,
                         )
-                        result.toReport() + "\n\n" + exact.report + "\n\n" + sourceFontReport() + "\n\n" + matcherReport(matches)
+                        result.toReport() + "\n\n" + exact.report + "\n\n" + sourceFontReport() +
+                            "\n\n" + FontGlyphMatcher.cmapDiagnosticReport(matchTargets) +
+                            "\n\n" + matcherReport(matches)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -103,12 +105,12 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 0.9 · upstream 원본 글꼴 기반 매칭\nAndroid 기본 글꼴 대신 인증된 fs-tahoma-8px.otf로 0/A/a를 재검증합니다."
+            text = "PoC 1.0 · OpenType glyph-ID 물리 셀 검증\n0/A/a의 실제 셀과 cmap glyph ID 관계를 수치로 검증합니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · 원본 글꼴 매칭"
+            text = "원본 ISO 선택 · 글리프 매핑 검증"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -152,8 +154,14 @@ class MainActivity : ComponentActivity() {
     ) {
         if (matches.isEmpty()) return
         atlasContainer.addView(TextView(this).apply {
-            text = "upstream 원본 글리프 형태 검색 · Top 8"
+            text = "OpenType cmap / 물리 셀 검증"
             textSize = 20f
+        })
+        atlasContainer.addView(TextView(this).apply {
+            text = FontGlyphMatcher.cmapDiagnosticReport(matchTargets)
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(0, 8, 0, 12)
         })
         atlasContainer.addView(TextView(this).apply {
             text = asciiValidationSummary(matches)
@@ -247,7 +255,7 @@ class MainActivity : ComponentActivity() {
             }
             appendLine()
         }
-        append("Japanese/surrogate rankings are trustworthy only after ASCII validation passes.")
+        append("Japanese/surrogate rankings are trustworthy only after deterministic cmap validation or explicit ASCII validation passes.")
     }.trimEnd()
 
     private fun renderExactGimPreviews(previews: List<GimFontProbe.Preview>) {
