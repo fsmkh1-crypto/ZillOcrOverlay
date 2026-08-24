@@ -1,0 +1,34 @@
+name: Korean Font Patch Analysis
+
+on:
+  push:
+    branches:
+      - korean-patch-poc
+  workflow_dispatch:
+
+jobs:
+  analyze-font-delta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream Zill toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: HK47196/zill
+          path: upstream-zill
+          fetch-depth: 1
+
+      - name: Analyze frozen zillfont XOR delta
+        run: |
+          python3 korean_patch/poc/analyze_font_zpatch.py \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --json font-zpatch-analysis.json
+          cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: zillfont-zpatch-analysis
+          path: font-zpatch-analysis.json
