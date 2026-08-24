@@ -440,7 +440,7 @@ class ScreenOcrService : Service() {
             for (column in 0 until columns) {
                 val x = ((column + 0.5f) * bitmap.width / columns).toInt().coerceIn(0, bitmap.width - 1)
                 val color = bitmap.getPixel(x, y)
-+                signature[index++] = (Color.red(color) * 77 + Color.green(color) * 150 + Color.blue(color) * 29) shr 8
+                signature[index++] = (Color.red(color) * 77 + Color.green(color) * 150 + Color.blue(color) * 29) shr 8
             }
         }
         return signature
