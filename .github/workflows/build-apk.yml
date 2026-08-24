@@ -62,17 +62,15 @@ jobs:
 
           Review the current branch as an Android/Kotlin code review. Classify findings as **must fix / recommended / optional**.
 
-          Please focus on:
-          - Room migrations and data preservation
-          - approved speaker/OCR alias learning (no silent persistence)
-          - translation override precedence over cache/AI
-          - sticky speaker lifecycle and forced-retry behavior
-          - in-flight request cancellation races
-          - overlay auto-height and manual resize behavior
-          - primary overlay bar and grouped settings/learning panel usability
-          - persistent pending-candidate badge and confirmation-before-save safety
-          - correction/approval dialog modality on TYPE_APPLICATION_OVERLAY
-          - HTTP/API error handling
+          Please focus on issue #24 learning inbox:
+          - multi-candidate speaker/OCR inbox dedupe and hit counts
+          - no candidate Toast during gameplay
+          - typed persistent ignore keys and provider-side filtering
+          - candidate map size caps/eviction ordering
+          - approve/edit/ignore flows in LearningManagerActivity
+          - cache clearing must not erase the candidate inbox
+          - region reset/service context clearing behavior
+          - existing Room migrations/data preservation and translation behavior regressions
           EOF
           (cd claude-review && zip -qr ../ZillOcrOverlay-source-for-Claude.zip .)
 
