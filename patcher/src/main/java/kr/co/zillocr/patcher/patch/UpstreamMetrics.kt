@@ -56,13 +56,10 @@ object UpstreamMetrics {
         for (i in 0 until n) {
             val av = a[i].toInt() and 0xff
             val bv = b[i].toInt() and 0xff
-            if (av != bv) return@sortedWithComparator av - bv
+            if (av != bv) return av - bv
         }
         return a.size - b.size
     }
-
-    // Small helper only to make the lambda return label above explicit to Kotlin.
-    private inline fun <T> sortedWithComparator(block: () -> T): T = block()
 
     private fun gitBlobSha1(data: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-1")
