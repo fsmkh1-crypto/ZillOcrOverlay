@@ -7,7 +7,7 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
-            android:name=".MainActivity"
+            android:name=".MetricSlotActivity"
             android:exported="true"
             android:label="질올 한글패치">
             <intent-filter>
@@ -15,5 +15,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:label="질올 한글패치" />
     </application>
 </manifest>
