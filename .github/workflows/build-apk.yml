@@ -31,6 +31,10 @@ jobs:
           python3 korean_patch/poc/analyze_font_zpatch.py \
             upstream-zill/release/font/font-zillfont.zpatch \
             --json font-zpatch-analysis.json
+          python3 korean_patch/poc/render_font_delta_atlas.py \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --outdir font-delta-atlas \
+            --json font-delta-atlas.json
           echo '### zillfont XOR analysis' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
@@ -64,6 +68,8 @@ jobs:
           name: zillfont-zpatch-analysis
           path: |
             font-zpatch-analysis.json
+            font-delta-atlas.json
+            font-delta-atlas/
             upstream-font-history.txt
           if-no-files-found: error
           retention-days: 14
@@ -128,6 +134,7 @@ jobs:
           - ULJM05410 v1.03 zillfont.par SHA-256 validation
           - authenticated upstream zpatch reconstruction
           - PAR section parsing and conservative XOR pattern analysis
+          - atlas/swizzle hypotheses must remain explicitly unproven until validated
           - no assumption that metrics numeric sort order equals physical glyph order
           - no modification/upload of the source ISO
           - separation from the OCR overlay application
