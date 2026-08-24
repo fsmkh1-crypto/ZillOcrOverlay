@@ -15,44 +15,45 @@ string rather than random dialogue.
 
 HK47196/zill validates replacement text through CP932/Shift-JIS. Direct Hangul
 therefore fails before build time. PoC 1 keeps that boundary intact and uses
-three CP932 extension glyphs as surrogate codes:
+three existing final-font glyph slots as surrogate codes:
 
-| Hangul | Surrogate | CP932 bytes | Width |
-|---|---|---:|---:|
-| 아 | 纊 | ED40 | 12 |
-| 이 | 褜 | ED41 | 12 |
-| 템 | 鍈 | ED42 | 12 |
+| Hangul | Surrogate | CP932 bytes | metrics.toml key | Width |
+|---|---|---:|---:|---:|
+| 아 | 腑 | E444 | 0x44e4 | 12 |
+| 이 | 躙 | E757 | 0x57e7 | 12 |
+| 템 | 綺 | E359 | 0x59e3 | 12 |
 
-The upstream repository was searched for the three surrogate characters before
-selection and no translation-data occurrence was found.
+All three metrics keys were confirmed in upstream `release/font/metrics.toml`.
+The upstream repository was also searched for the three surrogate characters
+before selection and no translation-data occurrence was found.
 
-The executable replacement becomes `纊褜鍈`. It is six bytes in CP932, so it
+The executable replacement becomes `腑躙綺`. It is six bytes in CP932, so it
 fits the original eight-byte `アイテム` field. At runtime the font patch must
-redraw those three CP932 glyph slots as `아`, `이`, and `템`.
+redraw those three existing glyph slots as `아`, `이`, and `템`.
 
 ## Upstream fixed-string override
 
 ```toml
-0x246658 = { source = "アイテム", replacement = "纊褜鍈" }
+0x246658 = { source = "アイテム", replacement = "腑躙綺" }
 ```
 
-`generate_fixed_string_override.py` validates the surrogate CP932 values and
-capacity before printing this override.
+`generate_fixed_string_override.py` validates the surrogate CP932 values,
+metrics key byte order, and field capacity before printing this override.
 
 ## Remaining blocker for an executable PoC
 
 The released English project freezes `font/zillfont.par` as an authenticated
 XOR delta and exposes the final 2,637-glyph metrics table, but does not publish
-raw retail font members. We still need a deterministic way to replace the
-three glyph bitmaps.
+a visible glyph authoring/writer path for replacing individual glyph bitmaps.
 
 Preferred implementation path:
 
-1. Port/reuse the upstream game archive/font parser if a glyph writer exists.
-2. If the final font atlas layout is fixed and documented, patch only the three
-   glyph cells on the user's phone after reading the retail member from the ISO.
-3. Preserve all upstream retail hash guards and output a new ISO rather than
-   changing the user's source ISO in place.
+1. Reconstruct or locate the `zillfont.paf` glyph-cell layout.
+2. Patch only the three confirmed existing cells (`0x44e4`, `0x57e7`,
+   `0x59e3`) using Hangul bitmaps.
+3. Apply that modification on the user's phone after reading the required
+   retail member from the ISO, preserving the original ISO untouched.
+4. Keep upstream validation and produce a separate patched ISO.
 
 ## Android delivery requirement
 
