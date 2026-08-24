@@ -12,13 +12,14 @@ object KoreanSurrogateCodec {
         val hangul: Char,
         val surrogate: Char,
         val cp932Hex: String,
+        val metricKey: String,
         val advance: Int = 12,
     )
 
     val pocGlyphs: List<Glyph> = listOf(
-        Glyph('아', '纊', "ED40"),
-        Glyph('이', '褜', "ED41"),
-        Glyph('템', '鍈', "ED42"),
+        Glyph('아', '腑', "E444", "0x44e4"),
+        Glyph('이', '躙', "E757", "0x57e7"),
+        Glyph('템', '綺', "E359", "0x59e3"),
     )
 
     private val encodeMap = pocGlyphs.associate { it.hangul to it.surrogate }
