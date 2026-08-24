@@ -1,0 +1,32 @@
+# Zill O'll Infinite Plus Korean patch PoC
+# CP932 surrogate glyphs reserved for the first deterministic in-game test.
+
+format = "zill-korean-surrogates"
+version = 1
+
+[[glyph]]
+hangul = "아"
+surrogate = "纊"
+cp932 = "ED40"
+advance = 12
+
+[[glyph]]
+hangul = "이"
+surrogate = "褜"
+cp932 = "ED41"
+advance = 12
+
+[[glyph]]
+hangul = "템"
+surrogate = "鍈"
+cp932 = "ED42"
+advance = 12
+
+[[fixed_string]]
+offset = "0x246658"
+source = "アイテム"
+english = "Items"
+korean = "아이템"
+surrogate_text = "纊褜鍈"
+source_cp932_bytes = 8
+replacement_cp932_bytes = 6
