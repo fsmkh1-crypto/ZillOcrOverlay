@@ -27,8 +27,22 @@ jobs:
             --json font-zpatch-analysis.json
           cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Test metrics-order to atlas-cell hypothesis
+        run: |
+          python3 korean_patch/poc/analyze_metric_order_mapping.py \
+            upstream-zill/release/font/metrics.toml \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --json metric-order-mapping.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### metrics order / 16x16 atlas mapping diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metric-order-mapping.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload analysis
         uses: actions/upload-artifact@v4
         with:
           name: zillfont-zpatch-analysis
-          path: font-zpatch-analysis.json
+          path: |
+            font-zpatch-analysis.json
+            metric-order-mapping.json
