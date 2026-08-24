@@ -13,6 +13,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import kr.co.zillocr.patcher.patch.UpstreamFontPatch
 import kr.co.zillocr.patcher.patch.ZillFontIsoAnalyzer
 import java.io.FileInputStream
 import java.util.concurrent.Executors
@@ -28,12 +29,13 @@ class MainActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ISO 분석 중…"
+        statusView.text = "ISO 및 upstream 영문 폰트 패치 분석 중…"
         executor.execute {
             val report = try {
+                val patch = UpstreamFontPatch.download()
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                     FileInputStream(pfd.fileDescriptor).channel.use { channel ->
-                        ZillFontIsoAnalyzer.analyze(channel).toReport()
+                        ZillFontIsoAnalyzer.analyze(channel, patch.xor).toReport()
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -70,13 +72,13 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(TextView(this).apply {
-            text = "PoC 0.1 · 원본 ULJM-05410 v1.03 ISO 폰트 진단\nOCR 번역기와 별개의 독립 패처 앱입니다."
+            text = "PoC 0.2 · 원본 폰트 인증 + upstream 영문 폰트 재구성\nOCR 번역기와 별개의 독립 패처 앱입니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · 폰트 분석"
+            text = "원본 ISO 선택 · 폰트 심층 분석"
             setOnClickListener {
                 isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*"))
             }
