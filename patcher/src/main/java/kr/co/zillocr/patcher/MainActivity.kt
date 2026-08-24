@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
     private var latestReport: String = ""
 
     private val matchTargets = listOf("0", "A", "a", "ア", "イ", "テ", "ム", "腑", "躙", "綺")
+    private val knownAsciiAnchors = mapOf("0" to 16, "A" to 31, "a" to 60)
 
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -55,7 +56,9 @@ class MainActivity : ComponentActivity() {
                         channel.position(0)
                         val exact = ExactGimIsoAnalyzer.analyze(channel, patch.xor)
                         exactPreviews = exact.previews
-                        matches = FontGlyphMatcher.rank(exactPreviews, matchTargets, topN = 8)
+                        // Keep the complete ranking so the three known ASCII cells can be
+                        // measured objectively even when they do not appear in Top 8.
+                        matches = FontGlyphMatcher.rank(exactPreviews, matchTargets, topN = 3072)
                         result.toReport() + "\n\n" + exact.report + "\n\n" + matcherReport(matches)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
@@ -90,7 +93,7 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 0.7 · metrics 순서 폐기 · 물리 글리프 형태 검색\n0/A/a로 검색기를 검증한 뒤 일본어와 surrogate 후보를 찾습니다."
+            text = "PoC 0.8 · 물리 글리프 검색 정량 검증\n0/A/a의 실제 셀 순위를 전체 3,072셀에서 계산합니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         })
@@ -143,12 +146,12 @@ class MainActivity : ComponentActivity() {
             textSize = 20f
         })
         atlasContainer.addView(TextView(this).apply {
-            text = "Android 시스템 글꼴과 atlas 셀의 윤곽을 비교한 보조 검색입니다. 먼저 0/A/a의 1위가 실제 위치(0=16, A=31, a=60)와 맞는지 확인해야 합니다. 그 검증 전에는 일본어 결과를 확정하지 않습니다."
+            text = asciiValidationSummary(matches)
             textSize = 13f
             setPadding(0, 8, 0, 12)
         })
         matchTargets.forEach { target ->
-            val ranked = matches[target].orEmpty()
+            val ranked = matches[target].orEmpty().take(8)
             if (ranked.isEmpty()) return@forEach
             atlasContainer.addView(TextView(this).apply {
                 text = "target '$target'"
@@ -196,9 +199,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun asciiValidationSummary(matches: Map<String, List<FontGlyphMatcher.Match>>): String {
+        val facts = knownAsciiAnchors.map { (target, ordinal) ->
+            val ranked = matches[target].orEmpty()
+            val index = ranked.indexOfFirst { it.sectionIndex == 0 && it.ordinal == ordinal }
+            val match = if (index >= 0) ranked[index] else null
+            Triple(target, index + 1, match?.score)
+        }
+        val pass = facts.all { it.second == 1 }
+        return buildString {
+            append(if (pass) "ASCII matcher validation: PASS" else "ASCII matcher validation: FAIL / UNTRUSTED")
+            append("\nknown cells: ")
+            facts.forEachIndexed { i, (target, rank, score) ->
+                if (i > 0) append(" · ")
+                append("$target=#${if (rank > 0) rank else "?"}")
+                if (score != null) append(" (${"%.3f".format(score)})")
+            }
+            if (!pass) append("\n일본어·surrogate Top 8은 참고값일 뿐 확정하지 않습니다.")
+        }
+    }
+
     private fun matcherReport(matches: Map<String, List<FontGlyphMatcher.Match>>): String = buildString {
-        appendLine("visual glyph matcher (heuristic; metrics textual order is NOT used)")
-        appendLine("known physical ASCII anchors from PoC 0.6 screenshot: 0=s0:16, A=s0:31, a=s0:60")
+        appendLine("visual glyph matcher (heuristic; metrics textual order is NOT physical cell order)")
+        appendLine("known physical ASCII anchors: 0=s0:16, A=s0:31, a=s0:60")
+        appendLine(asciiValidationSummary(matches).replace("\n", " | "))
+        appendLine("upstream note: metrics.toml is an advance/repertoire table; DBCS keys are encoded-byte values, not atlas ordinals")
         matchTargets.forEach { target ->
             append("  $target:")
             matches[target].orEmpty().take(8).forEach { m ->
@@ -206,7 +231,7 @@ class MainActivity : ComponentActivity() {
             }
             appendLine()
         }
-        append("Trust Japanese/surrogate rankings only if ASCII anchors rank correctly first.")
+        append("Japanese/surrogate rankings are trustworthy only after ASCII validation passes.")
     }.trimEnd()
 
     private fun renderExactGimPreviews(previews: List<GimFontProbe.Preview>) {
