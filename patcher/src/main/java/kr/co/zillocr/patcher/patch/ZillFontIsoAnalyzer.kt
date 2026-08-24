@@ -49,6 +49,7 @@ object ZillFontIsoAnalyzer {
         val longestRuns: List<Run> = emptyList(),
         val changedOffsetMod16: List<Int> = emptyList(),
         val patternReport: String? = null,
+        val atlasPreviews: List<FontAtlasProbe.Preview> = emptyList(),
     ) {
         fun toReport(): String = buildString {
             appendLine("Zill O'll Infinite Plus Korean patch · font diagnostics")
@@ -100,6 +101,17 @@ object ZillFontIsoAnalyzer {
                     appendLine()
                     appendLine(patternReport)
                 }
+                if (atlasPreviews.isNotEmpty()) {
+                    appendLine()
+                    appendLine("512x512 4bpp + PSP unswizzle atlas hypothesis")
+                    appendLine("WARNING: visual hypothesis only; not yet a confirmed font format")
+                    atlasPreviews.forEach { preview ->
+                        appendLine(
+                            "  section ${preview.sectionIndex}: changedPixels=${preview.changedPixels}, " +
+                                "nonZero retail=${preview.nonZeroOriginalPixels}, english=${preview.nonZeroEnglishPixels}"
+                        )
+                    }
+                }
             }
         }
     }
@@ -137,6 +149,15 @@ object ZillFontIsoAnalyzer {
         val patterns = if (xorPatch != null && par != null) {
             FontPatternAnalysis.report(xorPatch, par.sections)
         } else null
+        val previews = if (
+            english != null &&
+            xorPatch != null &&
+            par != null &&
+            sha == EXPECTED_FONT_SHA256 &&
+            englishSha == EXPECTED_ENGLISH_FONT_SHA256
+        ) {
+            FontAtlasProbe.build(font, english, xorPatch, par.sections)
+        } else emptyList()
 
         return Result(
             paBinSize = paBin.size,
@@ -159,6 +180,7 @@ object ZillFontIsoAnalyzer {
             longestRuns = longest,
             changedOffsetMod16 = mod16,
             patternReport = patterns,
+            atlasPreviews = previews,
         )
     }
 
