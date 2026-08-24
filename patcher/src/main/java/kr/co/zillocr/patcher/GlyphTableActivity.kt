@@ -19,7 +19,7 @@ import kr.co.zillocr.patcher.patch.UpstreamMetrics
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 1.9: follow authenticated renderer callees toward code-unit -> glyph mapping. */
+/** PoC 2.0: trace deeper text-conversion and renderer helpers toward code-unit -> glyph mapping. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -31,7 +31,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "renderer callee / glyph mapper 후보 추적 중…"
+        statusView.text = "text conversion / glyph mapper 심층 추적 중…"
         executor.execute {
             val report = try {
                 val metrics = UpstreamMetrics.downloadEntries()
@@ -71,12 +71,12 @@ class GlyphTableActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 1.9 · renderer callee → glyph mapper 추적\n1.8에서 profile main renderer가 실제로 호출하는 0x146374 계열과 인접 helper들을 직접 따라갑니다. 문자 로드 뒤 산술/테이블 접근을 거쳐 per-glyph 상태를 만드는 첫 함수를 찾는 읽기 전용 진단판입니다."
+            text = "PoC 2.0 · text conversion → glyph mapper 심층 추적\n1.9에서 0x1463F4는 renderer orchestration/state 코드로 확인됐지만 atlas mapper 자체는 아니었습니다. 이번 판은 0x220130을 최우선으로, renderer/layout helper들을 한 단계 더 내려가 문자 코드가 실제 glyph 선택값으로 바뀌는 지점을 찾습니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · glyph mapper trace"
+            text = "원본 ISO 선택 · glyph mapper deep trace"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -86,7 +86,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java)
-                        .setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v4", latestReport))
+                        .setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v5", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
