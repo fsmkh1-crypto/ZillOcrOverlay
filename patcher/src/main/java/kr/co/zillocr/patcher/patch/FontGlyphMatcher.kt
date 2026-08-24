@@ -32,6 +32,50 @@ object FontGlyphMatcher {
         "a" to 60,
     )
 
+    /**
+     * Human-readable, fail-closed proof for the cmap/glyph-ID hypothesis.
+     * This intentionally exposes every anchor glyph ID and cell-minus-glyph-ID delta,
+     * so a device run can distinguish a real constant-offset rule from a visual match.
+     */
+    fun cmapDiagnosticReport(targets: List<String>): String {
+        val font = UpstreamSourceFont.authenticatedSnapshot()
+            ?: return "OpenType cmap atlas diagnostic: unavailable (source font not authenticated yet)"
+        val allTargets = (knownAsciiAbsoluteCells.keys + targets).distinct()
+        val mappings = OpenTypeCmapProbe.map(font, allTargets).associateBy { it.text }
+        val anchorRows = knownAsciiAbsoluteCells.map { (text, cell) ->
+            val gid = mappings[text]?.glyphId
+            Triple(text, gid, gid?.let { cell - it })
+        }
+        val offsets = anchorRows.mapNotNull { it.third }
+        val pass = anchorRows.all { it.second != null } && offsets.size == knownAsciiAbsoluteCells.size && offsets.distinct().size == 1
+        val offset = if (pass) offsets.first() else null
+
+        return buildString {
+            appendLine("OpenType cmap -> physical atlas hypothesis")
+            anchorRows.forEach { (text, gid, delta) ->
+                appendLine("  anchor '$text': physical=${knownAsciiAbsoluteCells.getValue(text)} gid=${gid ?: "missing"} cell-gid=${delta ?: "n/a"}")
+            }
+            appendLine(if (pass) "constant-offset validation: PASS (offset=$offset)" else "constant-offset validation: FAIL / REJECTED")
+            if (pass) {
+                targets.filterNot { it in knownAsciiAbsoluteCells }.forEach { target ->
+                    val gid = mappings[target]?.glyphId
+                    if (gid == null) {
+                        appendLine("  target '$target': cmap glyph missing; no physical prediction")
+                    } else {
+                        val absolute = gid + offset!!
+                        if (absolute in 0 until 3 * 1024) {
+                            appendLine("  target '$target': gid=$gid -> s${absolute / 1024}:${absolute % 1024}")
+                        } else {
+                            appendLine("  target '$target': gid=$gid -> absolute=$absolute out of atlas range")
+                        }
+                    }
+                }
+            } else {
+                append("non-ASCII physical predictions suppressed")
+            }
+        }.trimEnd()
+    }
+
     fun rank(
         previews: List<GimFontProbe.Preview>,
         targets: List<String>,
