@@ -1,0 +1,41 @@
+name: Fix alpha8.5 stray patch marker
+
+on:
+  push:
+    branches:
+      - perf/ocr-http-cache-alpha8.5
+    paths:
+      - '.github/workflows/fix-alpha8.5-stray-plus.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/ocr-http-cache-alpha8.5
+          fetch-depth: 0
+      - name: Remove stray patch marker and self
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/kr/co/zillocr/overlay/capture/ScreenOcrService.kt')
+          s = p.read_text()
+          bad = '\n+                signature[index++] = '
+          good = '\n                signature[index++] = '
+          if bad not in s:
+              raise SystemExit('expected stray marker not found')
+          p.write_text(s.replace(bad, good, 1))
+          PY
+          rm -f .github/workflows/fix-alpha8.5-stray-plus.yml
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix stray patch marker in frame signature'
+          git push origin HEAD:perf/ocr-http-cache-alpha8.5
