@@ -24,7 +24,7 @@ jobs:
         with:
           repository: HK47196/zill
           path: upstream-zill
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Analyze authenticated upstream font delta
         run: |
@@ -36,11 +36,35 @@ jobs:
           cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Inspect upstream font history
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== commits touching release/font ==='
+            git -C upstream-zill log --all --date=iso --pretty='format:%H %ad %s' -- release/font || true
+            echo
+            echo '=== name-status history for font paths ==='
+            git -C upstream-zill log --all --name-status --pretty='format:COMMIT %H %s' -- '*font*' 'release/font/*' || true
+            echo
+            echo '=== commits mentioning zillfont ==='
+            git -C upstream-zill log --all -S'zillfont' --date=iso --pretty='format:%H %ad %s' -- . || true
+            echo
+            echo '=== commits mentioning fs-tahoma-8px ==='
+            git -C upstream-zill log --all -S'fs-tahoma-8px' --date=iso --pretty='format:%H %ad %s' -- . || true
+            echo
+            echo '=== deleted font-like files ==='
+            git -C upstream-zill log --all --diff-filter=D --name-status --pretty='format:COMMIT %H %s' -- '*font*' || true
+          } > upstream-font-history.txt
+          sed -n '1,300p' upstream-font-history.txt
+
       - name: Upload font analysis
         uses: actions/upload-artifact@v4
         with:
           name: zillfont-zpatch-analysis
-          path: font-zpatch-analysis.json
+          path: |
+            font-zpatch-analysis.json
+            upstream-font-history.txt
           if-no-files-found: error
           retention-days: 14
 
