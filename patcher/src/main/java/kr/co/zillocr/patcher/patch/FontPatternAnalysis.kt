@@ -46,7 +46,7 @@ object FontPatternAnalysis {
             appendLine("within-section shifted-change overlap (hits / changed bytes):")
             sections.forEachIndexed { index, section ->
                 val changed = relativeChanged[index]
-                val scores = candidateShifts.mapNotNull { shift ->
+                val scores = candidateShifts.toList().mapNotNull { shift: Int ->
                     if (shift >= section.size || changed.isEmpty()) return@mapNotNull null
                     val hits = changed.count { relative -> relative + shift in changed }
                     Triple(shift, hits, hits.toDouble() / changed.size.toDouble())
