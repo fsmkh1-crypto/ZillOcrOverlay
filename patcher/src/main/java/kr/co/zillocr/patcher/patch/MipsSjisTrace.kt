@@ -1,6 +1,6 @@
 package kr.co.zillocr.patcher.patch
 
-/** Read-only MIPS trace focused on the confirmed Shift-JIS decoder-like routine. */
+/** Targeted read-only disassembly around Shift-JIS decoding and known text-renderer sites. */
 object MipsSjisTrace {
     private val regs = arrayOf(
         "zero","at","v0","v1","a0","a1","a2","a3","t0","t1","t2","t3","t4","t5","t6","t7",
@@ -8,121 +8,132 @@ object MipsSjisTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("targeted MIPS Shift-JIS trace v2")
+        appendLine("targeted renderer/glyph trace v3")
         appendLine("ELF mapping: virtual address = file offset - 0x80")
-        appendLine("confirmed behavior at 0x22655C..0x226600: validates Shift-JIS lead/trail bytes, combines lead<<8 | trail, stores the 16-bit code unit with sh, and returns 2 for a valid two-byte character.")
-        appendLine("This is a decoder/validator stage, not yet the physical atlas-index calculation.")
+        appendLine("decoder finding carried forward: 0x22655C..0x226600 validates Shift-JIS and preserves lead<<8 | trail; it is not the atlas mapper.")
+        appendLine("new strategy: pivot to upstream-authenticated renderer patch sites, recover their containing functions, direct callers and call targets, and look for the first consumer that turns a decoded code unit into glyph storage/index state.")
 
-        val center = 0x226580
-        val fnStart = findFunctionStart(boot, center)
-        val fnEnd = findFunctionEnd(boot, center)
-        val fnVa = fnStart - 0x80
-        appendLine("inferred decoder function: file=0x${hx(fnStart)}..0x${hx(fnEnd)} va=0x${hx(fnVa)}..0x${hx(fnEnd - 0x80)}")
-
-        appendLine()
-        appendLine("[decoder function]")
-        dump(boot, fnStart, fnEnd.coerceAtMost(fnStart + 0x500)).forEach { appendLine(it) }
-
-        val callers = findJalCallers(boot, fnVa)
-        appendLine()
-        appendLine("direct jal callers of inferred decoder entry (target va=0x${hx(fnVa)}): ${callers.size}")
-        if (callers.isEmpty()) {
-            appendLine("  none (routine may be entered through a wrapper, function pointer, or inferred start may need adjustment)")
-        } else {
-            callers.take(24).forEachIndexed { i, off ->
-                appendLine("  #${i + 1} call file=0x${hx(off)} va=0x${hx(off - 0x80)}")
-                val s = (off - 0x40).coerceAtLeast(0) and -4
-                val e = (off + 0x70).coerceAtMost(boot.size - 4) and -4
-                dump(boot, s, e).forEach { appendLine("    ${it.trimStart()}") }
-            }
+        val rendererSites = listOf(
+            "profile glyph-bucket site" to 0x145E88,
+            "profile main renderer stack site" to 0x1564C4,
+            "profile biography renderer-source site" to 0x7165C,
+        )
+        for ((name, site) in rendererSites) {
+            appendLine()
+            appendLine("=== $name ===")
+            appendRendererFunctionTrace(boot, site)
         }
 
         appendLine()
-        appendLine("nearby direct-call targets from the decoder body:")
-        val bodyCalls = mutableListOf<Pair<Int, Int>>()
-        var p = fnStart
-        while (p + 3 < boot.size && p <= fnEnd) {
-            val w = u32(boot, p)
-            if (((w ushr 26) and 0x3f) == 0x03) bodyCalls += p to jumpTargetVa(w, p)
-            p += 4
-        }
-        if (bodyCalls.isEmpty()) appendLine("  none")
-        bodyCalls.distinctBy { it.second }.forEach { (at, targetVa) ->
-            appendLine("  jal @file=0x${hx(at)} -> va=0x${hx(targetVa)} file≈0x${hx(targetVa + 0x80)}")
+        appendLine("=== decoder callers retained for cross-check ===")
+        val decoderEntryFile = 0x2264A8
+        val decoderVa = decoderEntryFile - 0x80
+        val callers = findJalCallers(boot, decoderVa)
+        appendLine("decoder direct jal callers: ${callers.size}")
+        callers.take(8).forEachIndexed { i, off ->
+            appendLine("  #${i + 1} call file=${hex(off)} va=${hex(off - 0x80)}")
         }
 
         appendLine()
-        append("Interpretation: if callers pass a destination buffer that is later consumed by a renderer, trace that consumer next. The decoder itself preserves the Shift-JIS pair as a 16-bit value; it does not expose the atlas slot here.")
+        append("Interpretation: the useful renderer candidate is the function whose body loads text/code units (lbu/lhu), then performs arithmetic/table access before storing per-glyph state or issuing a render call. The 0x145E88 site is known upstream to size a renderer glyph bucket; 0x1564C4 is inside the profile renderer's expanded scratch-frame path. No writes are enabled.")
     }.trimEnd()
 
-    private fun findFunctionStart(data: ByteArray, center: Int): Int {
-        val min = (center - 0x500).coerceAtLeast(0) and -4
-        var best = (center - 0x100).coerceAtLeast(0) and -4
-        var off = center and -4
-        while (off >= min) {
-            val w = u32(data, off)
+    private fun StringBuilder.appendRendererFunctionTrace(boot: ByteArray, site: Int) {
+        val start = inferFunctionStart(boot, site)
+        val end = inferFunctionEnd(boot, site, start)
+        appendLine("site file=${hex(site)} va=${hex(site - 0x80)}")
+        appendLine("inferred function file=${hex(start)}..${hex(end)} va=${hex(start - 0x80)}..${hex(end - 0x80)}")
+
+        val functionVa = start - 0x80
+        val callers = findJalCallers(boot, functionVa)
+        appendLine("direct jal callers of inferred entry: ${callers.size}")
+        callers.take(8).forEachIndexed { i, call ->
+            appendLine("  caller#${i + 1} file=${hex(call)} va=${hex(call - 0x80)}")
+        }
+
+        val callTargets = linkedMapOf<Int, MutableList<Int>>()
+        var p = start
+        while (p <= end && p + 3 < boot.size) {
+            val w = u32(boot, p)
+            if (((w ushr 26) and 0x3f) == 0x03) {
+                val va = ((p - 0x80 + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
+                callTargets.getOrPut(va) { mutableListOf() } += p
+            }
+            p += 4
+        }
+        appendLine("direct call targets inside function: ${callTargets.size}")
+        callTargets.entries.take(16).forEach { (va, calls) ->
+            appendLine("  jal target va=${hex(va)} file≈${hex(va + 0x80)} from ${calls.joinToString { hex(it) }}")
+        }
+
+        val dumpStart = maxOf(start, site - 0x120)
+        val dumpEnd = minOf(end, site + 0x180)
+        appendLine("focused disassembly around site:")
+        p = dumpStart and -4
+        while (p <= dumpEnd && p + 3 < boot.size) {
+            val w = u32(boot, p)
+            val marker = if (p == site) "  <SITE>" else ""
+            appendLine("  ${hex(p)}  ${w.toUInt().toString(16).uppercase().padStart(8,'0')}  ${decode(w, p)}$marker")
+            p += 4
+        }
+
+        appendLine("nearby text/glyph-looking memory operations:")
+        val memStart = maxOf(start, site - 0x300)
+        val memEnd = minOf(end, site + 0x300)
+        var shown = 0
+        p = memStart and -4
+        while (p <= memEnd && p + 3 < boot.size && shown < 48) {
+            val w = u32(boot, p)
+            val op = (w ushr 26) and 0x3f
+            if (op in setOf(0x20,0x24,0x21,0x25,0x28,0x29,0x2b)) {
+                appendLine("  ${hex(p)}  ${decode(w, p)}")
+                shown++
+            }
+            p += 4
+        }
+    }
+
+    private fun inferFunctionStart(data: ByteArray, site: Int): Int {
+        var p = site and -4
+        val floor = maxOf(0, p - 0x900)
+        while (p >= floor) {
+            val w = u32(data, p)
             val op = (w ushr 26) and 0x3f
             val rs = (w ushr 21) and 31
             val rt = (w ushr 16) and 31
             val imm = (w and 0xffff).toShort().toInt()
-            if (op == 0x09 && rs == 29 && rt == 29 && imm < 0) {
-                var sawRaSave = false
-                var q = off
-                while (q <= (off + 0x40).coerceAtMost(center) && q + 3 < data.size) {
-                    val x = u32(data, q)
-                    val xop = (x ushr 26) and 0x3f
-                    val xrs = (x ushr 21) and 31
-                    val xrt = (x ushr 16) and 31
-                    if (xop == 0x2b && xrs == 29 && xrt == 31) sawRaSave = true
-                    q += 4
-                }
-                if (sawRaSave) return off
-                best = off
-            }
-            off -= 4
+            if (op == 0x09 && rs == 29 && rt == 29 && imm < 0) return p
+            p -= 4
         }
-        return best
+        return maxOf(0, (site - 0x180) and -4)
     }
 
-    private fun findFunctionEnd(data: ByteArray, center: Int): Int {
-        var off = center and -4
-        val max = (center + 0x800).coerceAtMost(data.size - 8) and -4
-        while (off <= max) {
-            if (u32(data, off) == 0x03E00008) return off + 4 // include delay slot
-            off += 4
+    private fun inferFunctionEnd(data: ByteArray, site: Int, start: Int): Int {
+        var p = maxOf(site, start) and -4
+        val ceiling = minOf(data.size - 8, p + 0x1200)
+        while (p <= ceiling) {
+            if (u32(data, p) == 0x03E00008) return minOf(data.size - 4, p + 4)
+            p += 4
         }
-        return max
+        return minOf(data.size - 4, site + 0x240)
     }
 
     private fun findJalCallers(data: ByteArray, targetVa: Int): List<Int> {
         val out = mutableListOf<Int>()
-        var off = 0
-        while (off + 3 < data.size) {
-            val w = u32(data, off)
-            if (((w ushr 26) and 0x3f) == 0x03 && jumpTargetVa(w, off) == targetVa) out += off
-            off += 4
+        var p = 0
+        while (p + 3 < data.size) {
+            val w = u32(data, p)
+            if (((w ushr 26) and 0x3f) == 0x03) {
+                val callerVa = p - 0x80
+                val va = ((callerVa + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
+                if (va == targetVa) out += p
+            }
+            p += 4
         }
         return out
     }
 
-    private fun jumpTargetVa(w: Int, fileOff: Int): Int {
-        val pcVa = fileOff - 0x80
-        return ((pcVa + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
-    }
-
-    private fun dump(data: ByteArray, start: Int, end: Int): List<String> {
-        val out = mutableListOf<String>()
-        var off = start and -4
-        val last = end.coerceAtMost(data.size - 4) and -4
-        while (off <= last) {
-            val w = u32(data, off)
-            out += "  0x${hx(off).padStart(6,'0')}  ${w.toUInt().toString(16).uppercase().padStart(8,'0')}  ${decode(w, off)}"
-            off += 4
-        }
-        return out
-    }
-
-    private fun decode(w: Int, off: Int): String {
+    private fun decode(w: Int, fileOff: Int): String {
         val op = (w ushr 26) and 0x3f
         val rs = (w ushr 21) and 31
         val rt = (w ushr 16) and 31
@@ -133,8 +144,8 @@ object MipsSjisTrace {
         val simm = imm.toShort().toInt()
         fun r(i: Int) = regs[i]
         fun bt(): String {
-            val targetFile = off + 4 + (simm shl 2)
-            return "file=0x${hx(targetFile)} va=0x${hx(targetFile - 0x80)}"
+            val targetFile = fileOff + 4 + (simm shl 2)
+            return "file=${hex(targetFile)} va=${hex(targetFile - 0x80)}"
         }
         return when (op) {
             0x00 -> when (fn) {
@@ -153,8 +164,11 @@ object MipsSjisTrace {
                 0x2b -> "sltu ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 else -> "SPECIAL fn=0x${fn.toString(16)}"
             }
-            0x02 -> "j va=0x${hx(jumpTargetVa(w, off))}"
-            0x03 -> "jal va=0x${hx(jumpTargetVa(w, off))} file≈0x${hx(jumpTargetVa(w, off) + 0x80)}"
+            0x02, 0x03 -> {
+                val callerVa = fileOff - 0x80
+                val targetVa = ((callerVa + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
+                (if (op == 0x03) "jal" else "j") + " va=${hex(targetVa)} file≈${hex(targetVa + 0x80)}"
+            }
             0x04 -> "beq ${r(rs)}, ${r(rt)}, ${bt()}"
             0x05 -> "bne ${r(rs)}, ${r(rt)}, ${bt()}"
             0x06 -> "blez ${r(rs)}, ${bt()}"
@@ -178,7 +192,7 @@ object MipsSjisTrace {
         }
     }
 
-    private fun hx(v: Int): String = v.toUInt().toString(16).uppercase()
+    private fun hex(v: Int): String = "0x${v.toUInt().toString(16).uppercase()}"
 
     private fun u32(data: ByteArray, o: Int): Int =
         (data[o].toInt() and 0xff) or
