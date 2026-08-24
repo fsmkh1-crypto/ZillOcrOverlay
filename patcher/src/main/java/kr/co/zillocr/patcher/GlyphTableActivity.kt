@@ -18,7 +18,7 @@ import kr.co.zillocr.patcher.patch.UpstreamMetrics
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 1.3: recover the game's own CP932->glyph lookup evidence from BOOT/EBOOT. */
+/** PoC 1.4: distinguish packed CP932 text from real CP932->glyph lookup records. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -30,7 +30,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "BOOT/EBOOT 글리프 lookup table 스캔 중…"
+        statusView.text = "BOOT/EBOOT glyph lookup table v2 스캔 중…"
         executor.execute {
             val report = try {
                 val metrics = UpstreamMetrics.downloadEntries()
@@ -72,12 +72,12 @@ class GlyphTableActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "PoC 1.3 · 실행파일 glyph lookup table 탐색\n이제 metrics 순서를 추측하지 않고, 게임 실행파일 안의 실제 CP932→glyph 대응 테이블을 찾습니다. 완전 읽기 전용입니다."
+            text = "PoC 1.4 · 실행파일 glyph lookup table v2\nCP932 문자열 덩어리와 실제 key/index 레코드를 분리하고, 장기 연속 lookup 후보까지 찾습니다. 완전 읽기 전용입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · lookup table 스캔"
+            text = "원본 ISO 선택 · lookup table v2 스캔"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -87,7 +87,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java)
-                        .setPrimaryClip(ClipData.newPlainText("zill glyph-table probe", latestReport))
+                        .setPrimaryClip(ClipData.newPlainText("zill glyph-table probe v2", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
