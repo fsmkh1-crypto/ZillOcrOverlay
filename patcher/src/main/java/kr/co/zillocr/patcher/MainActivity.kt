@@ -19,6 +19,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import kr.co.zillocr.patcher.patch.ExactGimIsoAnalyzer
 import kr.co.zillocr.patcher.patch.FontAtlasProbe
+import kr.co.zillocr.patcher.patch.FontGlyphMatcher
 import kr.co.zillocr.patcher.patch.GimFontProbe
 import kr.co.zillocr.patcher.patch.UpstreamFontPatch
 import kr.co.zillocr.patcher.patch.ZillFontIsoAnalyzer
@@ -31,16 +32,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var atlasContainer: LinearLayout
     private var latestReport: String = ""
 
-    private data class MappingCell(val label: String, val expected: String, val metricKey: String, val ordinal: Int)
-
-    private val mappingCells = listOf(
-        MappingCell("ASCII sanity", "0", "0x0030", 17),
-        MappingCell("ASCII sanity", "A", "0x0041", 33),
-        MappingCell("ASCII sanity", "a", "0x0061", 64),
-        MappingCell("surrogate 아", "腑", "0x44e4", 223),
-        MappingCell("surrogate 이", "躙", "0x57e7", 486),
-        MappingCell("surrogate 템", "綺", "0x59e3", 511),
-    )
+    private val matchTargets = listOf("0", "A", "a", "ア", "イ", "テ", "ム", "腑", "躙", "綺")
 
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -48,11 +40,12 @@ class MainActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ISO 및 upstream 영문 폰트 패치 분석 중…"
+        statusView.text = "ISO · GIM · 글리프 형태 매칭 분석 중…"
         atlasContainer.removeAllViews()
         executor.execute {
             var heuristicPreviews: List<FontAtlasProbe.Preview> = emptyList()
             var exactPreviews: List<GimFontProbe.Preview> = emptyList()
+            var matches: Map<String, List<FontGlyphMatcher.Match>> = emptyMap()
             val report = try {
                 val patch = UpstreamFontPatch.download()
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -62,7 +55,8 @@ class MainActivity : ComponentActivity() {
                         channel.position(0)
                         val exact = ExactGimIsoAnalyzer.analyze(channel, patch.xor)
                         exactPreviews = exact.previews
-                        result.toReport() + "\n\n" + exact.report + "\n\n" + metricOrderMappingReport(exactPreviews)
+                        matches = FontGlyphMatcher.rank(exactPreviews, matchTargets, topN = 8)
+                        result.toReport() + "\n\n" + exact.report + "\n\n" + matcherReport(matches)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -71,7 +65,7 @@ class MainActivity : ComponentActivity() {
             latestReport = report
             runOnUiThread {
                 statusView.text = report
-                renderPreviews(exactPreviews, heuristicPreviews)
+                renderPreviews(exactPreviews, heuristicPreviews, matches)
             }
         }
     }
@@ -96,12 +90,12 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 0.6 · 물리 글리프 매핑 재검증\n고대비 이웃 셀로 metrics 순서 가설을 검증합니다."
+            text = "PoC 0.7 · metrics 순서 폐기 · 물리 글리프 형태 검색\n0/A/a로 검색기를 검증한 뒤 일본어와 surrogate 후보를 찾습니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · 글리프 매핑 분석"
+            text = "원본 ISO 선택 · 글리프 형태 검색"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -109,7 +103,8 @@ class MainActivity : ComponentActivity() {
             setOnClickListener {
                 if (latestReport.isBlank()) Toast.makeText(this@MainActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 else {
-                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zillfont diagnostics", latestReport))
+                    getSystemService(ClipboardManager::class.java)
+                        .setPrimaryClip(ClipData.newPlainText("zillfont diagnostics", latestReport))
                     Toast.makeText(this@MainActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -126,56 +121,58 @@ class MainActivity : ComponentActivity() {
         return ScrollView(this).apply { addView(root) }
     }
 
-    private fun renderPreviews(exact: List<GimFontProbe.Preview>, heuristic: List<FontAtlasProbe.Preview>) {
+    private fun renderPreviews(
+        exact: List<GimFontProbe.Preview>,
+        heuristic: List<FontAtlasProbe.Preview>,
+        matches: Map<String, List<FontGlyphMatcher.Match>>,
+    ) {
         atlasContainer.removeAllViews()
         if (exact.isNotEmpty()) {
-            renderNeighborMappingProbe(exact)
+            renderMatcher(matches, exact)
             renderExactGimPreviews(exact)
         } else renderHeuristicPreviews(heuristic)
     }
 
-    private fun renderNeighborMappingProbe(previews: List<GimFontProbe.Preview>) {
-        val page0 = previews.firstOrNull { it.sectionIndex == 0 && it.image.width == 512 && it.image.height == 512 } ?: return
+    private fun renderMatcher(
+        matches: Map<String, List<FontGlyphMatcher.Match>>,
+        previews: List<GimFontProbe.Preview>,
+    ) {
+        if (matches.isEmpty()) return
         atlasContainer.addView(TextView(this).apply {
-            text = "물리 셀 순서 검증 · 고대비"
+            text = "물리 글리프 형태 검색 · Top 8"
             textSize = 20f
         })
         atlasContainer.addView(TextView(this).apply {
-            text = "각 예상 위치의 앞뒤 8셀을 함께 표시합니다. 검은 글자가 선명하게 보입니다. 중앙 후보가 틀리면 실제 0/A/a가 어느 ordinal에 있는지 이 줄에서 바로 찾을 수 있습니다."
+            text = "Android 시스템 글꼴과 atlas 셀의 윤곽을 비교한 보조 검색입니다. 먼저 0/A/a의 1위가 실제 위치(0=16, A=31, a=60)와 맞는지 확인해야 합니다. 그 검증 전에는 일본어 결과를 확정하지 않습니다."
             textSize = 13f
             setPadding(0, 8, 0, 12)
         })
-        mappingCells.take(3).forEach { target -> addNeighborStrip(page0, target) }
-        atlasContainer.addView(TextView(this).apply {
-            text = "ASCII 3개가 동일한 규칙으로 맞는 것이 확인되기 전에는 surrogate 위치를 확정하지 않습니다."
-            textSize = 13f
-            setPadding(0, 14, 0, 8)
-        })
-    }
-
-    private fun addNeighborStrip(page: GimFontProbe.Preview, target: MappingCell) {
-        atlasContainer.addView(TextView(this).apply {
-            text = "expected '${target.expected}' · metrics ordinal=${target.ordinal} · ±8 cells"
-            textSize = 15f
-            setPadding(0, 10, 0, 4)
-        })
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val start = maxOf(0, target.ordinal - 8)
-        val end = minOf(1023, target.ordinal + 8)
-        for (ordinal in start..end) {
-            val cell = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(4, 0, 4, 0)
-            }
-            cell.addView(TextView(this).apply {
-                text = if (ordinal == target.ordinal) "[$ordinal]" else ordinal.toString()
-                textSize = 11f
+        matchTargets.forEach { target ->
+            val ranked = matches[target].orEmpty()
+            if (ranked.isEmpty()) return@forEach
+            atlasContainer.addView(TextView(this).apply {
+                text = "target '$target'"
+                textSize = 16f
+                setPadding(0, 10, 0, 4)
             })
-            cell.addView(highContrastCellView(page.retailArgb, ordinal))
-            row.addView(cell)
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            ranked.forEachIndexed { rank, match ->
+                val page = previews.firstOrNull { it.sectionIndex == match.sectionIndex } ?: return@forEachIndexed
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setPadding(4, 0, 4, 0)
+                }
+                box.addView(TextView(this).apply {
+                    text = "#${rank + 1} s${match.sectionIndex}:${match.ordinal}\n${"%.3f".format(match.score)}"
+                    textSize = 10f
+                    gravity = Gravity.CENTER
+                })
+                box.addView(highContrastCellView(page.retailArgb, match.ordinal))
+                row.addView(box)
+            }
+            atlasContainer.addView(HorizontalScrollView(this).apply { addView(row) }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
-        atlasContainer.addView(HorizontalScrollView(this).apply { addView(row) }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     private fun highContrastCellView(argb: IntArray, ordinal: Int): ImageView {
@@ -183,55 +180,49 @@ class MainActivity : ComponentActivity() {
         val cellY = ordinal / 32
         val pixels = IntArray(16 * 16)
         var p = 0
-        for (y in 0 until 16) {
-            for (x in 0 until 16) {
-                val source = argb[(cellY * 16 + y) * 512 + (cellX * 16 + x)]
-                val alpha = (source ushr 24) and 0xff
-                val v = 255 - alpha
-                pixels[p++] = Color.argb(255, v, v, v)
-            }
+        for (y in 0 until 16) for (x in 0 until 16) {
+            val source = argb[(cellY * 16 + y) * 512 + cellX * 16 + x]
+            val alpha = (source ushr 24) and 0xff
+            val v = 255 - alpha
+            pixels[p++] = Color.argb(255, v, v, v)
         }
         val raw = Bitmap.createBitmap(pixels, 16, 16, Bitmap.Config.ARGB_8888)
-        val scaled = Bitmap.createScaledBitmap(raw, 128, 128, false)
+        val scaled = Bitmap.createScaledBitmap(raw, 112, 112, false)
         raw.recycle()
         return ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER
             setImageBitmap(scaled)
-            layoutParams = ViewGroup.LayoutParams(128, 128)
+            layoutParams = ViewGroup.LayoutParams(112, 112)
         }
     }
 
-    private fun metricOrderMappingReport(previews: List<GimFontProbe.Preview>): String {
-        val page0 = previews.firstOrNull { it.sectionIndex == 0 && it.image.width == 512 && it.image.height == 512 } ?: return ""
-        return buildString {
-            appendLine("metrics.toml textual-order mapping remains UNCONFIRMED")
-            appendLine("PoC 0.6 displays high-contrast ordinal neighborhoods for ASCII anchors 0/A/a.")
-            mappingCells.take(3).forEach { target ->
-                val x = target.ordinal % 32
-                val y = target.ordinal / 32
-                appendLine("  expected=${target.expected} metric=${target.metricKey} ordinal=${target.ordinal} cell=($x,$y) nonTransparent=${cropNonTransparentPixels(page0.retailArgb, target.ordinal)}")
+    private fun matcherReport(matches: Map<String, List<FontGlyphMatcher.Match>>): String = buildString {
+        appendLine("visual glyph matcher (heuristic; metrics textual order is NOT used)")
+        appendLine("known physical ASCII anchors from PoC 0.6 screenshot: 0=s0:16, A=s0:31, a=s0:60")
+        matchTargets.forEach { target ->
+            append("  $target:")
+            matches[target].orEmpty().take(8).forEach { m ->
+                append(" s${m.sectionIndex}:${m.ordinal}(${"%.3f".format(m.score)})")
             }
-            append("Do not derive surrogate physical cells until all ASCII anchors establish one consistent mapping rule.")
+            appendLine()
         }
-    }
-
-    private fun cropNonTransparentPixels(argb: IntArray, ordinal: Int): Int {
-        val cellX = ordinal % 32
-        val cellY = ordinal / 32
-        var count = 0
-        for (y in 0 until 16) for (x in 0 until 16) {
-            if (((argb[(cellY * 16 + y) * 512 + (cellX * 16 + x)] ushr 24) and 0xff) != 0) count++
-        }
-        return count
-    }
+        append("Trust Japanese/surrogate rankings only if ASCII anchors rank correctly first.")
+    }.trimEnd()
 
     private fun renderExactGimPreviews(previews: List<GimFontProbe.Preview>) {
         val shown = previews.filter { it.changedLogicalPixels > 0 }.ifEmpty { previews }
-        atlasContainer.addView(TextView(this).apply { text = "Exact PAR/GIM decode"; textSize = 18f; setPadding(0, 20, 0, 0) })
+        atlasContainer.addView(TextView(this).apply {
+            text = "Exact PAR/GIM decode"
+            textSize = 18f
+            setPadding(0, 20, 0, 0)
+        })
         shown.forEach { preview ->
             val w = preview.image.width
             val h = preview.image.height
-            atlasContainer.addView(TextView(this).apply { text = "Child ${preview.sectionIndex} · ${w}×${h} ${preview.image.bits}bpp · reconstructed English"; textSize = 16f })
+            atlasContainer.addView(TextView(this).apply {
+                text = "Child ${preview.sectionIndex} · ${w}×${h} ${preview.image.bits}bpp · reconstructed English"
+                textSize = 16f
+            })
             atlasContainer.addView(argbImageView(preview.englishArgb, w, h), ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
     }
