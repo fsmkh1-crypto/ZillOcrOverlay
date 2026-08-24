@@ -8,20 +8,19 @@ object MipsSjisTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("targeted renderer/glyph trace v6")
+        appendLine("targeted renderer/glyph trace v7")
         appendLine("ELF mapping: virtual address = file offset - 0x80")
-        appendLine("2.0 finding: file 0x220130 is only a tiny pointer/default helper, not a glyph mapper. The renderer state loop at 0x1FA058 is now the strongest path because it consumes text through 0x1F9A4C / 0x1F9A9C and turns the result into a glyph descriptor via 0x1FA028.")
-        appendLine("strategy: trace the parser/classifier, text-advance, glyph-descriptor selector and its geometry helpers. Success is a code-unit-derived bounded value that selects font/texture/glyph state.")
+        appendLine("2.1 finding: 0x1F9A4C and 0x1F9A9C are parser/advance wrappers around file 0x1F9A34. The stronger edge is glyph selector 0x1FA028, which preserves parser result in a3 and calls file 0x1F9F8C.")
+        appendLine("strategy: trace the shared multibyte classifier core and the glyph lookup core first, then width/height and texture-geometry leaves used by the resulting descriptor.")
 
         val targets = listOf(
-            "text classifier/parser" to 0x1F9A4C,
-            "text advance / code-unit consumer" to 0x1F9A9C,
-            "glyph descriptor selector" to 0x1FA028,
-            "glyph geometry/state helper" to 0x1F9B14,
-            "glyph width helper" to 0x1F84E4,
-            "glyph height helper" to 0x1F8528,
-            "common renderer object helper A" to 0x1F9CA0,
-            "common renderer object helper B" to 0x1F9CF4,
+            "multibyte classifier core" to 0x1F9A34,
+            "glyph lookup core - strongest target" to 0x1F9F8C,
+            "glyph width core" to 0x1F94CC,
+            "glyph height core" to 0x1F94D4,
+            "descriptor geometry consumer" to 0x1F7620,
+            "descriptor texture placement consumer" to 0x1F786C,
+            "post descriptor metric helper" to 0x1F9AEC,
         )
         for ((name, entry) in targets) {
             appendLine()
@@ -32,10 +31,10 @@ object MipsSjisTrace {
         appendLine()
         appendLine("cross-check anchors:")
         appendLine("  Shift-JIS decoder file 0x2264A8 preserves two-byte code unit as lead<<8 | trail")
-        appendLine("  renderer state loop file 0x1FA058 reads text at s0 and calls file 0x1F9A4C then 0x1F9A9C")
-        appendLine("  file 0x1FA170 calls glyph-descriptor selector file 0x1FA028 with parser result in a2")
+        appendLine("  parser wrappers file 0x1F9A4C / 0x1F9A9C both call file 0x1F9A34")
+        appendLine("  glyph selector file 0x1FA028 masks parser result to 16-bit a3 and calls file 0x1F9F8C")
         appendLine("  atlas geometry: 15x16 slots, 34 columns, 1088 slots/page")
-        append("Interpretation: the key target is the first helper where the text/code-unit value survives into table/pointer arithmetic or a bounded glyph descriptor/index. Pure string advance, control-code classification, geometry, allocation and memcpy are negative results. No writes are enabled.")
+        append("Interpretation: the decisive result is code derived from a3/text bytes selecting a bounded record/table/texture entry. If 0x1F9F8C only compares style/state, follow its child that actually consumes a3. No writes are enabled.")
     }.trimEnd()
 
     private fun StringBuilder.appendFunctionTrace(data: ByteArray, entry: Int) {
@@ -43,9 +42,9 @@ object MipsSjisTrace {
         val end = inferFunctionEnd(data, entry, start)
         appendLine("entry file=${hex(entry)} va=${hex(entry - 0x80)}")
         appendLine("inferred function file=${hex(start)}..${hex(end)} va=${hex(start - 0x80)}..${hex(end - 0x80)}")
-        val callers = findJalCallers(data, start - 0x80)
-        appendLine("direct callers: ${callers.size}")
-        callers.take(20).forEachIndexed { i, off -> appendLine("  caller#${i + 1} file=${hex(off)} va=${hex(off - 0x80)}") }
+        val callers = findJalCallers(data, entry - 0x80)
+        appendLine("direct callers of target entry: ${callers.size}")
+        callers.take(24).forEachIndexed { i, off -> appendLine("  caller#${i + 1} file=${hex(off)} va=${hex(off - 0x80)}") }
 
         val childCalls = linkedMapOf<Int, MutableList<Int>>()
         var p = start
@@ -59,14 +58,14 @@ object MipsSjisTrace {
             p += 4
         }
         appendLine("child jal targets: ${childCalls.size}")
-        childCalls.entries.take(28).forEach { (va, at) ->
+        childCalls.entries.take(32).forEach { (va, at) ->
             appendLine("  va=${hex(va)} file≈${hex(va + 0x80)} from ${at.joinToString { hex(it) }}")
         }
 
         appendLine("function disassembly:")
         p = start
         var lines = 0
-        while (p <= end && p + 3 < data.size && lines < 360) {
+        while (p <= end && p + 3 < data.size && lines < 420) {
             val w = u32(data, p)
             val marker = if (p == entry) "  <ENTRY>" else ""
             appendLine("  ${hex(p)}  ${w.toUInt().toString(16).uppercase().padStart(8,'0')}  ${decode(w, p)}$marker")
@@ -78,7 +77,7 @@ object MipsSjisTrace {
         appendLine("character/index-looking operations:")
         p = start
         var shown = 0
-        while (p <= end && p + 3 < data.size && shown < 180) {
+        while (p <= end && p + 3 < data.size && shown < 220) {
             val w = u32(data, p)
             val op = (w ushr 26) and 0x3f
             val fn = w and 0x3f
