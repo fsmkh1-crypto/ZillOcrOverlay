@@ -9,11 +9,11 @@ import kotlin.math.min
 
 /**
  * Heuristic visual matcher for locating physical 16x16 glyph cells without assuming
- * metrics.toml textual ordering. It renders a reference glyph with Android's sans
- * font, normalizes both reference and atlas-cell silhouettes, then ranks atlas cells
- * by a Dice-like overlap plus row/column projection agreement.
+ * metrics.toml textual ordering. A caller-supplied Typeface is used for references;
+ * PoC 0.9 supplies upstream's authenticated fs-tahoma-8px.otf rather than Android's
+ * device-dependent sans font.
  *
- * This is a diagnostic aid only. ASCII anchors must rank correctly before Japanese
+ * This remains a diagnostic aid. ASCII anchors must rank correctly before Japanese
  * candidates are trusted.
  */
 object FontGlyphMatcher {
@@ -30,6 +30,7 @@ object FontGlyphMatcher {
         previews: List<GimFontProbe.Preview>,
         targets: List<String>,
         topN: Int = 8,
+        typeface: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL),
     ): Map<String, List<Match>> {
         val pages = previews.filter {
             it.sectionIndex in 0..2 && it.image.width == 512 && it.image.height == 512
@@ -37,7 +38,7 @@ object FontGlyphMatcher {
         if (pages.isEmpty()) return emptyMap()
 
         return targets.associateWith { target ->
-            val refs = referenceVariants(target)
+            val refs = referenceVariants(target, typeface)
             val matches = ArrayList<Match>(pages.size * 1024)
             pages.forEach { page ->
                 for (ordinal in 0 until 1024) {
@@ -58,25 +59,32 @@ object FontGlyphMatcher {
         }
     }
 
-    private fun referenceVariants(target: String): List<BooleanArray> {
+    private fun referenceVariants(target: String, typeface: Typeface): List<BooleanArray> {
         val out = ArrayList<BooleanArray>()
-        for (size in listOf(34f, 38f, 42f, 46f, 50f)) {
-            val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            val paint = Paint().apply {
-                isAntiAlias = false
-                color = 0xffffffff.toInt()
-                textSize = size
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        // Render several sizes and small x/y offsets because the frozen atlas cells may
+        // have been rasterized with a slightly different baseline/crop convention.
+        for (size in listOf(28f, 32f, 36f, 40f, 44f, 48f)) {
+            for (xOffset in listOf(1f, 3f, 5f)) {
+                for (baselineAdjust in listOf(-2f, 0f, 2f)) {
+                    val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+                    val canvas = Canvas(bmp)
+                    val paint = Paint().apply {
+                        isAntiAlias = false
+                        isSubpixelText = false
+                        color = 0xffffffff.toInt()
+                        textSize = size
+                        this.typeface = typeface
+                    }
+                    val fm = paint.fontMetrics
+                    canvas.drawText(target, xOffset, xOffset - fm.top + baselineAdjust, paint)
+                    val mask = BooleanArray(64 * 64)
+                    val pixels = IntArray(64 * 64)
+                    bmp.getPixels(pixels, 0, 64, 0, 0, 64, 64)
+                    for (i in pixels.indices) mask[i] = ((pixels[i] ushr 24) and 0xff) > 0
+                    normalize(mask, 64, 64)?.let(out::add)
+                    bmp.recycle()
+                }
             }
-            val fm = paint.fontMetrics
-            canvas.drawText(target, 4f, 4f - fm.top, paint)
-            val mask = BooleanArray(64 * 64)
-            val pixels = IntArray(64 * 64)
-            bmp.getPixels(pixels, 0, 64, 0, 0, 64, 64)
-            for (i in pixels.indices) mask[i] = ((pixels[i] ushr 24) and 0xff) > 0
-            normalize(mask, 64, 64)?.let(out::add)
-            bmp.recycle()
         }
         return out.distinctBy { it.contentHashCode() }
     }
