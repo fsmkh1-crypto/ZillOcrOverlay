@@ -13,6 +13,11 @@ import kotlin.math.min
  * PoC 0.9 supplies upstream's authenticated fs-tahoma-8px.otf rather than Android's
  * device-dependent sans font.
  *
+ * ASCII matching is performed against the authenticated reconstructed-English atlas,
+ * because that atlas was built from the same retained source font. Physical cell
+ * positions are unchanged by the XOR patch, so a successful ASCII match establishes
+ * the atlas coordinate system without relying on the retail glyph design.
+ *
  * This remains a diagnostic aid. ASCII anchors must rank correctly before Japanese
  * candidates are trusted.
  */
@@ -42,7 +47,10 @@ object FontGlyphMatcher {
             val matches = ArrayList<Match>(pages.size * 1024)
             pages.forEach { page ->
                 for (ordinal in 0 until 1024) {
-                    val cell = normalizedAtlasCell(page.retailArgb, ordinal) ?: continue
+                    // English reconstruction is authenticated byte-for-byte and uses
+                    // upstream's source typeface for the Latin repertoire. Cells left
+                    // untouched by the English patch are identical to retail.
+                    val cell = normalizedAtlasCell(page.englishArgb, ordinal) ?: continue
                     var best = 0.0
                     refs.forEach { ref -> best = max(best, similarity(cell, ref)) }
                     matches += Match(
@@ -61,8 +69,6 @@ object FontGlyphMatcher {
 
     private fun referenceVariants(target: String, typeface: Typeface): List<BooleanArray> {
         val out = ArrayList<BooleanArray>()
-        // Render several sizes and small x/y offsets because the frozen atlas cells may
-        // have been rasterized with a slightly different baseline/crop convention.
         for (size in listOf(28f, 32f, 36f, 40f, 44f, 48f)) {
             for (xOffset in listOf(1f, 3f, 5f)) {
                 for (baselineAdjust in listOf(-2f, 0f, 2f)) {
@@ -103,7 +109,6 @@ object FontGlyphMatcher {
         return normalize(mask, 16, 16)
     }
 
-    /** Normalize the occupied bounding box into a centered 16x16 binary mask. */
     private fun normalize(mask: BooleanArray, width: Int, height: Int): BooleanArray? {
         var minX = width
         var minY = height
