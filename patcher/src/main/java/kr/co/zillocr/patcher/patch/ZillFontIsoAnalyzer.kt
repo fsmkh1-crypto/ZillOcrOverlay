@@ -9,6 +9,7 @@ object ZillFontIsoAnalyzer {
     private const val FONT_MEMBER_INDEX = 13611
     private const val EXPECTED_FONT_SIZE = 525_424
     private const val EXPECTED_FONT_SHA256 = "0d3d6d2648870e87a01636cdfc7cc7af8100ea40b71e5ed05f82ac197606584a"
+    private const val EXPECTED_ENGLISH_FONT_SHA256 = "0f11ca53076e072408fb3eb9ffa29446b02fb97642f4173b559691c463a2fdb8"
     private const val EXPECTED_FONT_NAME = "font/zillfont.par"
 
     data class Result(
@@ -21,6 +22,11 @@ object ZillFontIsoAnalyzer {
         val sha256: String,
         val matchesRetailFont: Boolean,
         val firstBytesHex: String,
+        val englishSha256: String? = null,
+        val matchesEnglishFont: Boolean? = null,
+        val changedBytes: Int? = null,
+        val changedRuns: Int? = null,
+        val longestRuns: List<Run> = emptyList(),
     ) {
         fun toReport(): String = buildString {
             appendLine("Zill O'll Infinite Plus Korean patch · font diagnostics")
@@ -35,10 +41,27 @@ object ZillFontIsoAnalyzer {
             appendLine("expected SHA-256: $EXPECTED_FONT_SHA256")
             appendLine("retail font match: ${if (matchesRetailFont) "YES" else "NO"}")
             appendLine("first 32 bytes: $firstBytesHex")
+            if (englishSha256 != null) {
+                appendLine()
+                appendLine("upstream English font reconstruction")
+                appendLine("English result SHA-256: $englishSha256")
+                appendLine("expected result SHA-256: $EXPECTED_ENGLISH_FONT_SHA256")
+                appendLine("English font match: ${if (matchesEnglishFont == true) "YES" else "NO"}")
+                appendLine("changed bytes: $changedBytes / $memberSize")
+                appendLine("non-zero XOR runs: $changedRuns")
+                appendLine("longest changed runs:")
+                longestRuns.forEach { run ->
+                    appendLine("  0x${run.start.toString(16).uppercase()}..0x${run.endExclusive.toString(16).uppercase()} (${run.length} bytes)")
+                }
+            }
         }
     }
 
-    fun analyze(channel: SeekableByteChannel): Result {
+    data class Run(val start: Int, val endExclusive: Int) {
+        val length: Int get() = endExclusive - start
+    }
+
+    fun analyze(channel: SeekableByteChannel, xorPatch: ByteArray? = null): Result {
         val iso = Iso9660Reader(channel)
         val paBin = iso.find("PSP_GAME/USRDIR/pa.bin")
         val paArc = iso.find("PSP_GAME/USRDIR/pa.arc")
@@ -51,6 +74,18 @@ object ZillFontIsoAnalyzer {
 
         val font = iso.readEntryRange(paArc, member.offset, member.size)
         val sha = sha256(font)
+        if (xorPatch != null && xorPatch.size != font.size) {
+            error("XOR patch size ${xorPatch.size} does not match retail font ${font.size}")
+        }
+
+        val english = xorPatch?.let { patch ->
+            ByteArray(font.size) { i -> (font[i].toInt() xor patch[i].toInt()).toByte() }
+        }
+        val runs = xorPatch?.let(::nonZeroRuns).orEmpty()
+        val changed = xorPatch?.count { it.toInt() != 0 }
+        val longest = runs.sortedByDescending { it.length }.take(20)
+        val englishSha = english?.let(::sha256)
+
         return Result(
             paBinSize = paBin.size,
             paArcSize = paArc.size,
@@ -61,7 +96,27 @@ object ZillFontIsoAnalyzer {
             sha256 = sha,
             matchesRetailFont = sha == EXPECTED_FONT_SHA256,
             firstBytesHex = font.take(32).joinToString(" ") { "%02X".format(it.toInt() and 0xff) },
+            englishSha256 = englishSha,
+            matchesEnglishFont = englishSha?.let { it == EXPECTED_ENGLISH_FONT_SHA256 },
+            changedBytes = changed,
+            changedRuns = xorPatch?.let { runs.size },
+            longestRuns = longest,
         )
+    }
+
+    private fun nonZeroRuns(data: ByteArray): List<Run> {
+        val result = ArrayList<Run>()
+        var start = -1
+        for (i in data.indices) {
+            val changed = data[i].toInt() != 0
+            if (changed && start < 0) start = i
+            if (!changed && start >= 0) {
+                result += Run(start, i)
+                start = -1
+            }
+        }
+        if (start >= 0) result += Run(start, data.size)
+        return result
     }
 
     private data class PaaMember(val name: String, val offset: Long, val size: Int)
