@@ -179,6 +179,13 @@ class MainActivity : ComponentActivity() {
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         root.addView(Button(this).apply {
+            text = "한글패치 · 폰트 진단"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, FontDiagnosticsActivity::class.java))
+            }
+        }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        root.addView(Button(this).apply {
             text = "번역 기록 / 캐시 보기"
             setOnClickListener { showTranslationHistory() }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
