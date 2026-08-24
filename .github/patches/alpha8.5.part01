@@ -1,0 +1,150 @@
++                signature[index++] = (Color.red(color) * 77 + Color.green(color) * 150 + Color.blue(color) * 29) shr 8
++            }
++        }
++        return signature
++    }
++
++    private fun frameDifference(first: IntArray, second: IntArray): Double {
++        if (first.size != second.size || first.isEmpty()) return Double.MAX_VALUE
++        var total = 0L
++        for (i in first.indices) total += abs(first[i] - second[i]).toLong()
++        return total.toDouble() / first.size
++    }
++
++    private fun logPerf(message: String) {
++        Log.d(PERF_TAG, message)
+     }
+ 
+     private fun textSimilarity(first: String, second: String): Double {
+@@ -468,6 +560,7 @@
+                         lastResultSpeakerSource = speakerSource
+                         lastResultSpeakerTarget = speakerTarget
+                         showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))
++                        logPerf("display total=${SystemClock.elapsedRealtime() - request.acceptedAtMs}ms model=${request.model}")
+                         showPendingLearningHintIfNeeded()
+                     }
+                 }
+@@ -514,7 +607,7 @@
+ 
+     private fun retryLastTranslation() {
+         val previous = lastTranslationRequest ?: return
+-        val forced = previous.copy(force = true)
++        val forced = previous.copy(force = true, acceptedAtMs = SystemClock.elapsedRealtime())
+         lastTranslationRequest = forced
+         showResultOverlay("다시 번역 중…")
+         enqueueTranslation(forced)
+@@ -1184,6 +1277,9 @@
+         lastRecognizedText = ""
+         candidateOcrText = ""
+         candidateOcrHits = 0
++        candidateFirstSeenAt = 0L
++        lockedFrameSignature = null
++        lastUnchangedProbeAt = 0L
+     }
+ 
+     private fun endRegionSelection() {
+@@ -1264,10 +1360,21 @@
+         const val ACTION_STOP = "kr.co.zillocr.overlay.action.STOP"
+         const val EXTRA_RESULT_CODE = "result_code"
+         const val EXTRA_PROJECTION_DATA = "projection_data"
+-        private const val OCR_INTERVAL_MS = 320L
++        private const val OCR_INTERVAL_MS = 250L
+         private const val REQUIRED_STABLE_HITS = 2
+         private const val SAME_TEXT_SIMILARITY = 0.92
+         private const val CANDIDATE_SIMILARITY = 0.90
++        private const val IMAGE_SAMPLE_COLUMNS = 32
++        private const val IMAGE_SAMPLE_ROWS = 18
++        private const val IMAGE_CHANGE_OCR_THRESHOLD = 0.6
++        private const val MIN_VISUAL_CHANGE_FOR_NEW_TEXT = 0.08
++        private const val UNCHANGED_FRAME_PROBE_MS = 1_500L
++        private const val FAST_ACCEPT_FRAME_CHANGE = 16.0
++        private const val FAST_ACCEPT_MIN_CHARS = 12
++        private const val FAST_ACCEPT_MIN_JAPANESE_CHARS = 8
++        private const val FAST_ACCEPT_JAPANESE_RATIO = 0.70
++        private const val FAST_ACCEPT_MAX_PREVIOUS_SIMILARITY = 0.35
++        private const val PERF_TAG = "ZillPerf"
+         private const val OCR_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
+         private val ALPHA_LEVELS = intArrayOf(255, 191, 128, 64, 26, 0)
+         private const val NOTIFICATION_CHANNEL_ID = "zill_ocr_capture"
+--- a/app/src/main/java/kr/co/zillocr/overlay/translation/OpenAiTranslationProvider.kt
++++ b/app/src/main/java/kr/co/zillocr/overlay/translation/OpenAiTranslationProvider.kt
+@@ -1,6 +1,8 @@
+ package kr.co.zillocr.overlay.translation
+ 
+ import android.content.Context
++import android.os.SystemClock
++import android.util.Log
+ import kr.co.zillocr.overlay.data.AppContextHolder
+ import kr.co.zillocr.overlay.data.IgnoreListStore
+ import kr.co.zillocr.overlay.data.TranslationSettingsStore
+@@ -8,14 +10,17 @@
+ import kr.co.zillocr.overlay.db.OcrAliasEntity
+ import kr.co.zillocr.overlay.db.SpeakerEntity
+ import kr.co.zillocr.overlay.db.TranslationEntity
++import org.json.JSONArray
+ import org.json.JSONObject
+-import java.io.BufferedReader
+ import java.io.IOException
+-import java.io.InputStreamReader
+-import java.net.HttpURLConnection
+-import java.net.URL
+ import java.util.LinkedHashMap
++import java.util.concurrent.TimeUnit
+ import java.util.concurrent.atomic.AtomicBoolean
++import okhttp3.Call
++import okhttp3.MediaType.Companion.toMediaType
++import okhttp3.OkHttpClient
++import okhttp3.Request
++import okhttp3.RequestBody.Companion.toRequestBody
+ 
+ class TranslationCancelledException : IOException("translation cancelled")
+ 
+@@ -38,7 +43,7 @@
+ 
+     private val connectionLock = Any()
+     private val cancelled = AtomicBoolean(false)
+-    @Volatile private var activeConnection: HttpURLConnection? = null
++    @Volatile private var activeCall: Call? = null
+ 
+     @Volatile var lastSpeakerSource: String? = null
+         private set
+@@ -59,7 +64,7 @@
+ 
+     fun cancelInFlight() {
+         cancelled.set(true)
+-        synchronized(connectionLock) { activeConnection?.disconnect() }
++        synchronized(connectionLock) { activeCall?.cancel() }
+     }
+ 
+     private fun translateInternal(
+@@ -504,8 +509,37 @@
+         throwIfCancelled()
+         val requestBody = JSONObject().apply {
+             put("model", selectedModel)
+-            put("instructions", SYSTEM_INSTRUCTIONS)
+-            put("input", input)
++            if (selectedModel.startsWith("gpt-5.6-")) {
++                put("input", JSONArray().apply {
++                    put(JSONObject().apply {
++                        put("role", "developer")
++                        put("content", JSONArray().apply {
++                            put(JSONObject().apply {
++                                put("type", "input_text")
++                                put("text", SYSTEM_INSTRUCTIONS)
++                                put("prompt_cache_breakpoint", JSONObject().apply { put("mode", "explicit") })
++                            })
++                        })
++                    })
++                    put(JSONObject().apply {
++                        put("role", "user")
++                        put("content", JSONArray().apply {
++                            put(JSONObject().apply {
++                                put("type", "input_text")
++                                put("text", input)
++                            })
++                        })
++                    })
++                })
++                put("prompt_cache_key", "$PROMPT_CACHE_KEY_PREFIX:$selectedModel")
++                put("prompt_cache_options", JSONObject().apply {
++                    put("mode", "explicit")
