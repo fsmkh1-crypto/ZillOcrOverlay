@@ -39,6 +39,17 @@ jobs:
           cat metric-order-mapping.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Test OpenType cmap to atlas-cell constant-offset hypothesis
+        run: |
+          python3 korean_patch/poc/analyze_otf_cmap_mapping.py \
+            upstream-zill/release/font/fs-tahoma-8px.otf \
+            --json otf-cmap-mapping.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### OTF cmap / physical atlas diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat otf-cmap-mapping.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload analysis
         uses: actions/upload-artifact@v4
         with:
@@ -46,3 +57,4 @@ jobs:
           path: |
             font-zpatch-analysis.json
             metric-order-mapping.json
+            otf-cmap-mapping.json
