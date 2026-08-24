@@ -19,7 +19,7 @@ import kr.co.zillocr.patcher.patch.UpstreamMetrics
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 1.8: pivot from generic Shift-JIS decoder to authenticated renderer sites. */
+/** PoC 1.9: follow authenticated renderer callees toward code-unit -> glyph mapping. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -31,7 +31,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "renderer/glyph 소비 경로 정밀 추적 중…"
+        statusView.text = "renderer callee / glyph mapper 후보 추적 중…"
         executor.execute {
             val report = try {
                 val metrics = UpstreamMetrics.downloadEntries()
@@ -71,12 +71,12 @@ class GlyphTableActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 1.8 · renderer/glyph 소비 경로 추적\n1.7에서 0x2264A8 계열은 실제 Shift-JIS decoder이지만 atlas mapper는 아닌 것으로 확인됐습니다. 이번 판은 upstream이 실제 renderer로 인증해 둔 0x145E88, 0x1564C4, 0x7165C 주변 함수와 호출 관계를 읽기 전용으로 추적합니다."
+            text = "PoC 1.9 · renderer callee → glyph mapper 추적\n1.8에서 profile main renderer가 실제로 호출하는 0x146374 계열과 인접 helper들을 직접 따라갑니다. 문자 로드 뒤 산술/테이블 접근을 거쳐 per-glyph 상태를 만드는 첫 함수를 찾는 읽기 전용 진단판입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · renderer trace"
+            text = "원본 ISO 선택 · glyph mapper trace"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -86,7 +86,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java)
-                        .setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v3", latestReport))
+                        .setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v4", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
