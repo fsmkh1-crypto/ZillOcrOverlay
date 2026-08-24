@@ -19,7 +19,7 @@ import kr.co.zillocr.patcher.patch.UpstreamMetrics
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 2.1: trace text parser/classifier into glyph descriptor selection. */
+/** PoC 2.2: trace multibyte classifier core and glyph lookup core. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -28,7 +28,7 @@ class GlyphTableActivity : ComponentActivity() {
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: SecurityException) {}
-        statusView.text = "text parser → glyph descriptor 경로 추적 중…"
+        statusView.text = "multibyte classifier → glyph lookup core 추적 중…"
         executor.execute {
             val report = try {
                 val metrics = UpstreamMetrics.downloadEntries()
@@ -57,11 +57,11 @@ class GlyphTableActivity : ComponentActivity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(28), dp(20), dp(28)) }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 2.1 · text parser → glyph descriptor 추적\n2.0에서 0x220130은 매퍼가 아닌 단순 helper로 배제됐습니다. 이번 판은 실제 renderer state loop가 호출하는 0x1F9A4C, 0x1F9A9C, 0x1FA028 및 geometry helper를 추적해 code unit이 glyph 선택값으로 바뀌는 지점을 찾습니다."
+            text = "PoC 2.2 · multibyte classifier → glyph lookup core\n2.1에서 parser/advance wrapper 둘이 공통 core 0x1F9A34를 호출하고, glyph selector 0x1FA028이 parser 결과를 16비트 a3로 보존한 채 0x1F9F8C를 호출하는 경로가 확인됐습니다. 이번 판은 이 두 core와 descriptor geometry leaf를 직접 추적합니다."
             textSize = 14f; setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · parser/glyph trace"
+            text = "원본 ISO 선택 · glyph lookup core trace"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -69,7 +69,7 @@ class GlyphTableActivity : ComponentActivity() {
             setOnClickListener {
                 if (latestReport.isBlank()) Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 else {
-                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v6", latestReport))
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v7", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
