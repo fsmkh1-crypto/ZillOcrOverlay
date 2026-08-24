@@ -12,6 +12,22 @@ object ZillFontIsoAnalyzer {
     private const val EXPECTED_ENGLISH_FONT_SHA256 = "0f11ca53076e072408fb3eb9ffa29446b02fb97642f4173b559691c463a2fdb8"
     private const val EXPECTED_FONT_NAME = "font/zillfont.par"
 
+    data class Run(val start: Int, val endExclusive: Int) {
+        val length: Int get() = endExclusive - start
+    }
+
+    data class ParSection(
+        val index: Int,
+        val start: Int,
+        val endExclusive: Int,
+        val first32Hex: String,
+        val changedBytes: Int,
+        val changedRuns: Int,
+        val longestRun: Int,
+    ) {
+        val size: Int get() = endExclusive - start
+    }
+
     data class Result(
         val paBinSize: Long,
         val paArcSize: Long,
@@ -22,11 +38,16 @@ object ZillFontIsoAnalyzer {
         val sha256: String,
         val matchesRetailFont: Boolean,
         val firstBytesHex: String,
+        val parVersion: Int? = null,
+        val parCount: Int? = null,
+        val parUnknown: Int? = null,
+        val parSections: List<ParSection> = emptyList(),
         val englishSha256: String? = null,
         val matchesEnglishFont: Boolean? = null,
         val changedBytes: Int? = null,
         val changedRuns: Int? = null,
         val longestRuns: List<Run> = emptyList(),
+        val changedOffsetMod16: List<Int> = emptyList(),
     ) {
         fun toReport(): String = buildString {
             appendLine("Zill O'll Infinite Plus Korean patch · font diagnostics")
@@ -41,6 +62,23 @@ object ZillFontIsoAnalyzer {
             appendLine("expected SHA-256: $EXPECTED_FONT_SHA256")
             appendLine("retail font match: ${if (matchesRetailFont) "YES" else "NO"}")
             appendLine("first 32 bytes: $firstBytesHex")
+
+            if (parCount != null) {
+                appendLine()
+                appendLine("PAR container structure")
+                appendLine("version: $parVersion")
+                appendLine("entry count: $parCount")
+                appendLine("unknown header value: $parUnknown")
+                parSections.forEach { section ->
+                    appendLine(
+                        "section ${section.index}: " +
+                            "0x${section.start.toString(16).uppercase()}..0x${section.endExclusive.toString(16).uppercase()} " +
+                            "(${section.size} bytes), changed=${section.changedBytes}, runs=${section.changedRuns}, maxRun=${section.longestRun}"
+                    )
+                    appendLine("  first 32: ${section.first32Hex}")
+                }
+            }
+
             if (englishSha256 != null) {
                 appendLine()
                 appendLine("upstream English font reconstruction")
@@ -49,16 +87,16 @@ object ZillFontIsoAnalyzer {
                 appendLine("English font match: ${if (matchesEnglishFont == true) "YES" else "NO"}")
                 appendLine("changed bytes: $changedBytes / $memberSize")
                 appendLine("non-zero XOR runs: $changedRuns")
+                appendLine("changed-byte offset mod 16 histogram:")
+                if (changedOffsetMod16.size == 16) {
+                    appendLine(changedOffsetMod16.mapIndexed { index, count -> "%X:%d".format(index, count) }.joinToString("  "))
+                }
                 appendLine("longest changed runs:")
                 longestRuns.forEach { run ->
                     appendLine("  0x${run.start.toString(16).uppercase()}..0x${run.endExclusive.toString(16).uppercase()} (${run.length} bytes)")
                 }
             }
         }
-    }
-
-    data class Run(val start: Int, val endExclusive: Int) {
-        val length: Int get() = endExclusive - start
     }
 
     fun analyze(channel: SeekableByteChannel, xorPatch: ByteArray? = null): Result {
@@ -85,6 +123,12 @@ object ZillFontIsoAnalyzer {
         val changed = xorPatch?.count { it.toInt() != 0 }
         val longest = runs.sortedByDescending { it.length }.take(20)
         val englishSha = english?.let(::sha256)
+        val par = parsePar(font, xorPatch)
+        val mod16 = if (xorPatch != null) {
+            IntArray(16).also { histogram ->
+                for (i in xorPatch.indices) if (xorPatch[i].toInt() != 0) histogram[i and 0x0f]++
+            }.toList()
+        } else emptyList()
 
         return Result(
             paBinSize = paBin.size,
@@ -95,13 +139,47 @@ object ZillFontIsoAnalyzer {
             memberSize = member.size,
             sha256 = sha,
             matchesRetailFont = sha == EXPECTED_FONT_SHA256,
-            firstBytesHex = font.take(32).joinToString(" ") { "%02X".format(it.toInt() and 0xff) },
+            firstBytesHex = hex(font, 0, minOf(32, font.size)),
+            parVersion = par?.version,
+            parCount = par?.count,
+            parUnknown = par?.unknown,
+            parSections = par?.sections.orEmpty(),
             englishSha256 = englishSha,
             matchesEnglishFont = englishSha?.let { it == EXPECTED_ENGLISH_FONT_SHA256 },
             changedBytes = changed,
             changedRuns = xorPatch?.let { runs.size },
             longestRuns = longest,
+            changedOffsetMod16 = mod16,
         )
+    }
+
+    private data class ParInfo(val version: Int, val count: Int, val unknown: Int, val sections: List<ParSection>)
+
+    private fun parsePar(font: ByteArray, xorPatch: ByteArray?): ParInfo? {
+        if (font.size < 0x20 || !font.copyOfRange(0, 4).contentEquals(byteArrayOf('P'.code.toByte(), 'A'.code.toByte(), 'R'.code.toByte(), 0))) return null
+        val version = u32le(font, 4).toInt()
+        val count = u32le(font, 8).toInt()
+        val unknown = u32le(font, 12).toInt()
+        if (count !in 1..32 || 0x10 + count * 4 > font.size) return null
+
+        val starts = (0 until count).map { u32le(font, 0x10 + it * 4).toInt() }
+        if (starts.any { it !in 0 until font.size } || starts.zipWithNext().any { (a, b) -> b <= a }) return null
+
+        val sections = starts.mapIndexed { i, start ->
+            val end = if (i + 1 < starts.size) starts[i + 1] else font.size
+            val slicePatch = xorPatch?.copyOfRange(start, end)
+            val localRuns = slicePatch?.let(::nonZeroRuns).orEmpty()
+            ParSection(
+                index = i,
+                start = start,
+                endExclusive = end,
+                first32Hex = hex(font, start, minOf(32, end - start)),
+                changedBytes = slicePatch?.count { it.toInt() != 0 } ?: 0,
+                changedRuns = localRuns.size,
+                longestRun = localRuns.maxOfOrNull { it.length } ?: 0,
+            )
+        }
+        return ParInfo(version, count, unknown, sections)
     }
 
     private fun nonZeroRuns(data: ByteArray): List<Run> {
@@ -118,6 +196,9 @@ object ZillFontIsoAnalyzer {
         if (start >= 0) result += Run(start, data.size)
         return result
     }
+
+    private fun hex(data: ByteArray, offset: Int, length: Int): String =
+        data.copyOfRange(offset, offset + length).joinToString(" ") { "%02X".format(it.toInt() and 0xff) }
 
     private data class PaaMember(val name: String, val offset: Long, val size: Int)
 
