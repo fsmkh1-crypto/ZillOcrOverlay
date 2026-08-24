@@ -8,18 +8,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Heuristic visual matcher for locating physical 16x16 glyph cells without assuming
- * metrics.toml textual ordering. A caller-supplied Typeface is used for references;
- * PoC 0.9 supplies upstream's authenticated fs-tahoma-8px.otf rather than Android's
- * device-dependent sans font.
+ * Physical glyph locator that first tests a deterministic OpenType cmap/glyph-ID
+ * hypothesis against the three known ASCII cells. Only when one constant glyph-ID
+ * offset explains 0/A/a do non-ASCII targets receive physical-cell predictions.
  *
- * ASCII matching is performed against the authenticated reconstructed-English atlas,
- * because that atlas was built from the same retained source font. Physical cell
- * positions are unchanged by the XOR patch, so a successful ASCII match establishes
- * the atlas coordinate system without relying on the retail glyph design.
- *
- * This remains a diagnostic aid. ASCII anchors must rank correctly before Japanese
- * candidates are trusted.
+ * If that deterministic test fails, the old bitmap matcher remains available for
+ * ASCII diagnostics only. Non-ASCII visual fallback is deliberately disabled so an
+ * Android fallback font can never be mistaken for the authenticated upstream OTF.
  */
 object FontGlyphMatcher {
     data class Match(
@@ -29,6 +24,12 @@ object FontGlyphMatcher {
         val cellX: Int,
         val cellY: Int,
         val score: Double,
+    )
+
+    private val knownAsciiAbsoluteCells = mapOf(
+        "0" to 16,
+        "A" to 31,
+        "a" to 60,
     )
 
     fun rank(
@@ -42,29 +43,79 @@ object FontGlyphMatcher {
         }
         if (pages.isEmpty()) return emptyMap()
 
+        deterministicCmapMatches(pages, targets)?.let { return it }
+
+        // Deterministic cmap relation failed. Keep bitmap matching only as an ASCII
+        // diagnostic. Japanese/kanji targets stay empty instead of silently using
+        // Android's fallback CJK font and producing false physical-cell confidence.
         return targets.associateWith { target ->
-            val refs = referenceVariants(target, typeface)
-            val matches = ArrayList<Match>(pages.size * 1024)
-            pages.forEach { page ->
-                for (ordinal in 0 until 1024) {
-                    // English reconstruction is authenticated byte-for-byte and uses
-                    // upstream's source typeface for the Latin repertoire. Cells left
-                    // untouched by the English patch are identical to retail.
-                    val cell = normalizedAtlasCell(page.englishArgb, ordinal) ?: continue
-                    var best = 0.0
-                    refs.forEach { ref -> best = max(best, similarity(cell, ref)) }
-                    matches += Match(
-                        target = target,
-                        sectionIndex = page.sectionIndex,
-                        ordinal = ordinal,
-                        cellX = ordinal % 32,
-                        cellY = ordinal / 32,
-                        score = best,
-                    )
-                }
-            }
-            matches.sortedByDescending { it.score }.take(topN)
+            if (!isAscii(target)) return@associateWith emptyList()
+            visualRank(pages, target, topN, typeface)
         }
+    }
+
+    private fun deterministicCmapMatches(
+        pages: List<GimFontProbe.Preview>,
+        targets: List<String>,
+    ): Map<String, List<Match>>? {
+        val font = UpstreamSourceFont.authenticatedSnapshot() ?: return null
+        val allTargets = (knownAsciiAbsoluteCells.keys + targets).distinct()
+        val mappings = OpenTypeCmapProbe.map(font, allTargets).associateBy { it.text }
+        val offsets = ArrayList<Int>()
+        for ((text, cell) in knownAsciiAbsoluteCells) {
+            val gid = mappings[text]?.glyphId ?: return null
+            offsets += cell - gid
+        }
+        if (offsets.distinct().size != 1) return null
+        val offset = offsets.first()
+        val pageBySection = pages.associateBy { it.sectionIndex }
+        return targets.associateWith { target ->
+            val gid = mappings[target]?.glyphId ?: return@associateWith emptyList()
+            val absolute = gid + offset
+            if (absolute !in 0 until 3 * 1024) return@associateWith emptyList()
+            val section = absolute / 1024
+            if (pageBySection[section] == null) return@associateWith emptyList()
+            val ordinal = absolute % 1024
+            listOf(
+                Match(
+                    target = target,
+                    sectionIndex = section,
+                    ordinal = ordinal,
+                    cellX = ordinal % 32,
+                    cellY = ordinal / 32,
+                    score = 1.0,
+                )
+            )
+        }
+    }
+
+    private fun isAscii(target: String): Boolean =
+        target.codePointCount(0, target.length) == 1 && target.codePointAt(0) in 0x20..0x7e
+
+    private fun visualRank(
+        pages: List<GimFontProbe.Preview>,
+        target: String,
+        topN: Int,
+        typeface: Typeface,
+    ): List<Match> {
+        val refs = referenceVariants(target, typeface)
+        val matches = ArrayList<Match>(pages.size * 1024)
+        pages.forEach { page ->
+            for (ordinal in 0 until 1024) {
+                val cell = normalizedAtlasCell(page.englishArgb, ordinal) ?: continue
+                var best = 0.0
+                refs.forEach { ref -> best = max(best, similarity(cell, ref)) }
+                matches += Match(
+                    target = target,
+                    sectionIndex = page.sectionIndex,
+                    ordinal = ordinal,
+                    cellX = ordinal % 32,
+                    cellY = ordinal / 32,
+                    score = best,
+                )
+            }
+        }
+        return matches.sortedByDescending { it.score }.take(topN)
     }
 
     private fun referenceVariants(target: String, typeface: Typeface): List<BooleanArray> {
