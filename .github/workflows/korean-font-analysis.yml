@@ -50,6 +50,17 @@ jobs:
           cat otf-cmap-mapping.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Test 15x16 metric-slot geometry against device anchors
+        run: |
+          python3 korean_patch/poc/analyze_metric_slot_geometry.py \
+            upstream-zill/release/font/metrics.toml \
+            --json metric-slot-geometry.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### 15x16 metric-slot geometry diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metric-slot-geometry.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload analysis
         uses: actions/upload-artifact@v4
         with:
@@ -58,3 +69,4 @@ jobs:
             font-zpatch-analysis.json
             metric-order-mapping.json
             otf-cmap-mapping.json
+            metric-slot-geometry.json
