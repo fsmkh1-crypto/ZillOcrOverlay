@@ -6,6 +6,10 @@ physical glyph order, nor that bitmap data begins at EOF - glyph_count*stride.
 It authenticates the upstream frozen XOR patch, reports changed regions and
 alignment/periodicity hints, and (when a retail zillfont.par is supplied) also
 reconstructs the authenticated English result for downstream structural scans.
+
+The PAR section starts below were verified on-device from the authenticated
+ULJM05410 v1.03 retail font header. They are used only to partition the public
+XOR delta; they are not treated as glyph or bitmap boundaries.
 """
 
 from __future__ import annotations
@@ -23,6 +27,11 @@ EXPECTED_SOURCE_SHA256 = "0d3d6d2648870e87a01636cdfc7cc7af8100ea40b71e5ed05f82ac
 EXPECTED_RESULT_SHA256 = "0f11ca53076e072408fb3eb9ffa29446b02fb97642f4173b559691c463a2fdb8"
 EXPECTED_PATCH_SHA256 = "fcc46f805a970050d61b16ea00458731f1d56737fb04b0e04080f76c21465d89"
 EXPECTED_XOR_SHA256 = "7a48a683e523c07f641b9a70396555ce16d69ecccccc6fc6edbea50edd622aac"
+
+# Verified from the authenticated retail PAR header:
+# PAR\0, version=2, count=4, unknown=1, starts below.
+PAR_SECTION_STARTS = (0x0000C0, 0x0201B0, 0x0402A0, 0x060390)
+SHIFT_CANDIDATES = (8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512)
 
 
 def sha256(data: bytes) -> str:
@@ -68,12 +77,90 @@ def block_touch_stats(data: bytes, sizes=(4, 8, 12, 16, 24, 32, 48, 64, 96, 128,
     out = {}
     for size in sizes:
         touched = {i // size for i in changed_indices}
+        total = (len(data) + size - 1) // size
         out[str(size)] = {
             "touched_blocks": len(touched),
-            "total_blocks": (len(data) + size - 1) // size,
-            "coverage": len(touched) / ((len(data) + size - 1) // size),
+            "total_blocks": total,
+            "coverage": len(touched) / total,
         }
     return out
+
+
+def section_analysis(data: bytes):
+    sections = []
+    relative_changed_sets = []
+
+    for index, start in enumerate(PAR_SECTION_STARTS):
+        end = PAR_SECTION_STARTS[index + 1] if index + 1 < len(PAR_SECTION_STARTS) else len(data)
+        section = data[start:end]
+        runs = list(nonzero_runs(section))
+        changed_positions = {i for i, value in enumerate(section) if value}
+        relative_changed_sets.append(changed_positions)
+        lengths = [e - s for s, e in runs]
+        sections.append({
+            "index": index,
+            "start": start,
+            "end": end,
+            "size": end - start,
+            "changed_bytes": len(changed_positions),
+            "changed_ratio": len(changed_positions) / len(section),
+            "run_count": len(runs),
+            "max_run": max(lengths) if lengths else 0,
+            "median_run": statistics.median(lengths) if lengths else 0,
+            "start_alignment": alignment_histogram([s for s, _ in runs], moduli=(8, 16, 32, 64)),
+            "relative_mod16_changed_bytes": [
+                sum(1 for pos in changed_positions if pos % 16 == remainder)
+                for remainder in range(16)
+            ],
+        })
+
+    pairwise = []
+    for i in range(len(relative_changed_sets)):
+        for j in range(i + 1, len(relative_changed_sets)):
+            a = relative_changed_sets[i]
+            b = relative_changed_sets[j]
+            intersection = len(a & b)
+            union = len(a | b)
+            pairwise.append({
+                "left": i,
+                "right": j,
+                "intersection": intersection,
+                "union": union,
+                "jaccard": intersection / union if union else 0.0,
+            })
+
+    common = set(relative_changed_sets[0])
+    for positions in relative_changed_sets[1:]:
+        common &= positions
+
+    shift_scores = []
+    for index, positions in enumerate(relative_changed_sets):
+        scores = []
+        if positions:
+            for shift in SHIFT_CANDIDATES:
+                hits = sum(1 for pos in positions if pos + shift in positions)
+                scores.append({
+                    "shift": shift,
+                    "hits": hits,
+                    "changed_bytes": len(positions),
+                    "ratio": hits / len(positions),
+                })
+        shift_scores.append({
+            "section": index,
+            "top": sorted(scores, key=lambda x: x["ratio"], reverse=True)[:10],
+        })
+
+    return {
+        "verified_par_section_starts": list(PAR_SECTION_STARTS),
+        "sections": sections,
+        "pairwise_same_relative_offset_overlap": pairwise,
+        "same_relative_changed_in_all_sections": {
+            "count": len(common),
+            "first_offsets": sorted(common)[:128],
+        },
+        "shifted_change_overlap": shift_scores,
+        "warning": "section partitioning is verified; glyph/page semantics remain unproven",
+    }
 
 
 def xor_bytes(a: bytes, b: bytes) -> bytes:
@@ -123,6 +210,7 @@ def main() -> None:
         "start_delta_gcd": gcd_of_deltas(starts),
         "alignment_histogram": alignment_histogram(starts),
         "block_stats": block_touch_stats(expanded),
+        "section_analysis": section_analysis(expanded),
         "longest_runs": [
             {"start": s, "end": e, "length": e - s}
             for s, e in sorted(runs, key=lambda r: r[1] - r[0], reverse=True)[:80]
@@ -130,6 +218,7 @@ def main() -> None:
         "warnings": [
             "metrics key order is NOT treated as physical glyph order",
             "no bitmap-start or fixed-stride assumption is made",
+            "PAR section starts are verified from the authenticated retail header, but section semantics remain unproven",
             "candidate layout must be validated against recognizable glyph imagery or renderer lookup",
         ],
     }
