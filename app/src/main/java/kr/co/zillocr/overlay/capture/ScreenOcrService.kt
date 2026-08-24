@@ -26,6 +26,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.provider.Settings
 import android.text.StaticLayout
 import android.text.TextUtils
@@ -85,6 +86,9 @@ class ScreenOcrService : Service() {
     @Volatile private var lastRecognizedText = ""
     private var candidateOcrText = ""
     private var candidateOcrHits = 0
+    private var candidateFirstSeenAt = 0L
+    private var lockedFrameSignature: IntArray? = null
+    private var lastUnchangedProbeAt = 0L
     private val ocrInFlight = AtomicBoolean(false)
 
     private val recentJapanese = ArrayDeque<String>()
@@ -127,7 +131,8 @@ class ScreenOcrService : Service() {
         val context: List<String>,
         val apiKey: String,
         val model: String,
-        val force: Boolean = false
+        val force: Boolean = false,
+        val acceptedAtMs: Long = SystemClock.elapsedRealtime()
     )
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -329,8 +334,27 @@ class ScreenOcrService : Service() {
                 ocrInFlight.set(false)
                 return
             }
+
+            val signature = buildFrameSignature(cropped)
+            val frameChange = lockedFrameSignature?.let { frameDifference(it, signature) }
+            val probeDue = now - lastUnchangedProbeAt >= UNCHANGED_FRAME_PROBE_MS
+            if (lastRecognizedText.isNotBlank() && candidateOcrText.isBlank() && frameChange != null &&
+                frameChange < IMAGE_CHANGE_OCR_THRESHOLD && !probeDue
+            ) {
+                cropped.recycle()
+                ocrInFlight.set(false)
+                return
+            }
+            if (frameChange != null && frameChange < IMAGE_CHANGE_OCR_THRESHOLD && probeDue) {
+                lastUnchangedProbeAt = now
+            }
+
+            val ocrStartedAt = SystemClock.elapsedRealtime()
             recognizer.process(InputImage.fromBitmap(cropped, 0))
-                .addOnSuccessListener { result -> processOcrCandidate(normalizeText(result.text)) }
+                .addOnSuccessListener { result ->
+                    val ocrMs = SystemClock.elapsedRealtime() - ocrStartedAt
+                    processOcrCandidate(normalizeText(result.text), signature, frameChange ?: 0.0, ocrMs)
+                }
                 .addOnFailureListener { error ->
                     mainHandler.post { showResultOverlay("OCR 오류: ${error.javaClass.simpleName}") }
                 }
@@ -343,26 +367,94 @@ class ScreenOcrService : Service() {
         }
     }
 
-    private fun processOcrCandidate(text: String) {
+    private fun processOcrCandidate(text: String, frameSignature: IntArray, frameChange: Double, ocrMs: Long) {
         if (text.isBlank()) return
         val stable = lastRecognizedText
         if (stable.isNotBlank() && textSimilarity(stable, text) >= SAME_TEXT_SIMILARITY) {
+            // 시각적 애니메이션은 있었지만 OCR 본문이 같다면 새 프레임을 기준점으로 흡수한다.
+            lockedFrameSignature = frameSignature
             candidateOcrText = ""
             candidateOcrHits = 0
+            candidateFirstSeenAt = 0L
+            logPerf("ocr same text ${ocrMs}ms change=${"%.2f".format(frameChange)}")
             return
         }
+
+        if (stable.isNotBlank() && frameChange < MIN_VISUAL_CHANGE_FOR_NEW_TEXT) {
+            // 화면은 사실상 그대로인데 OCR 문자열만 흔들린 경우는 새 대사 후보로 만들지 않는다.
+            lockedFrameSignature = frameSignature
+            candidateOcrText = ""
+            candidateOcrHits = 0
+            candidateFirstSeenAt = 0L
+            return
+        }
+
+        if (shouldFastAccept(text, stable, frameChange)) {
+            acceptRecognizedText(text, frameSignature, ocrMs, fast = true)
+            return
+        }
+
         if (candidateOcrText.isBlank() || textSimilarity(candidateOcrText, text) < CANDIDATE_SIMILARITY) {
             candidateOcrText = text
             candidateOcrHits = 1
+            candidateFirstSeenAt = SystemClock.elapsedRealtime()
             return
         }
         candidateOcrHits += 1
         if (candidateOcrHits < REQUIRED_STABLE_HITS) return
-        val accepted = text
+        acceptRecognizedText(text, frameSignature, ocrMs, fast = false)
+    }
+
+    private fun acceptRecognizedText(text: String, frameSignature: IntArray, ocrMs: Long, fast: Boolean) {
+        val stabilizedMs = candidateFirstSeenAt.takeIf { it > 0L }?.let { SystemClock.elapsedRealtime() - it } ?: 0L
         candidateOcrText = ""
         candidateOcrHits = 0
-        lastRecognizedText = accepted
-        handleRecognizedText(accepted)
+        candidateFirstSeenAt = 0L
+        lastRecognizedText = text
+        lockedFrameSignature = frameSignature
+        lastUnchangedProbeAt = SystemClock.elapsedRealtime()
+        logPerf("ocr accepted mode=${if (fast) "1-hit" else "2-hit"} ocr=${ocrMs}ms stabilize=${stabilizedMs}ms")
+        handleRecognizedText(text)
+    }
+
+    private fun shouldFastAccept(text: String, stable: String, frameChange: Double): Boolean {
+        if (stable.isBlank() || frameChange < FAST_ACCEPT_FRAME_CHANGE) return false
+        val compact = canonicalizeForComparison(text)
+        if (compact.length < FAST_ACCEPT_MIN_CHARS) return false
+        val japaneseChars = compact.count { ch ->
+            ch in '\u3040'..'\u309F' || ch in '\u30A0'..'\u30FF' || ch in '\u4E00'..'\u9FFF'
+        }
+        if (japaneseChars < FAST_ACCEPT_MIN_JAPANESE_CHARS || japaneseChars.toDouble() / compact.length < FAST_ACCEPT_JAPANESE_RATIO) return false
+        if (textSimilarity(stable, text) > FAST_ACCEPT_MAX_PREVIOUS_SIMILARITY) return false
+        if (text.count { it == '\uFFFD' } > 0) return false
+        return true
+    }
+
+    private fun buildFrameSignature(bitmap: Bitmap): IntArray {
+        val columns = IMAGE_SAMPLE_COLUMNS
+        val rows = IMAGE_SAMPLE_ROWS
+        val signature = IntArray(columns * rows)
+        var index = 0
+        for (row in 0 until rows) {
+            val y = ((row + 0.5f) * bitmap.height / rows).toInt().coerceIn(0, bitmap.height - 1)
+            for (column in 0 until columns) {
+                val x = ((column + 0.5f) * bitmap.width / columns).toInt().coerceIn(0, bitmap.width - 1)
+                val color = bitmap.getPixel(x, y)
+                signature[index++] = (Color.red(color) * 77 + Color.green(color) * 150 + Color.blue(color) * 29) shr 8
+            }
+        }
+        return signature
+    }
+
+    private fun frameDifference(first: IntArray, second: IntArray): Double {
+        if (first.size != second.size || first.isEmpty()) return Double.MAX_VALUE
+        var total = 0L
+        for (i in first.indices) total += abs(first[i] - second[i]).toLong()
+        return total.toDouble() / first.size
+    }
+
+    private fun logPerf(message: String) {
+        Log.d(PERF_TAG, message)
     }
 
     private fun textSimilarity(first: String, second: String): Double {
@@ -468,6 +560,7 @@ class ScreenOcrService : Service() {
                         lastResultSpeakerSource = speakerSource
                         lastResultSpeakerTarget = speakerTarget
                         showResultOverlay(formatTranslatedDisplay(translated, speakerTarget, explicit, candidate))
+                        logPerf("display total=${SystemClock.elapsedRealtime() - request.acceptedAtMs}ms model=${request.model}")
                         showPendingLearningHintIfNeeded()
                     }
                 }
@@ -514,7 +607,7 @@ class ScreenOcrService : Service() {
 
     private fun retryLastTranslation() {
         val previous = lastTranslationRequest ?: return
-        val forced = previous.copy(force = true)
+        val forced = previous.copy(force = true, acceptedAtMs = SystemClock.elapsedRealtime())
         lastTranslationRequest = forced
         showResultOverlay("다시 번역 중…")
         enqueueTranslation(forced)
@@ -1184,6 +1277,9 @@ class ScreenOcrService : Service() {
         lastRecognizedText = ""
         candidateOcrText = ""
         candidateOcrHits = 0
+        candidateFirstSeenAt = 0L
+        lockedFrameSignature = null
+        lastUnchangedProbeAt = 0L
     }
 
     private fun endRegionSelection() {
@@ -1264,10 +1360,21 @@ class ScreenOcrService : Service() {
         const val ACTION_STOP = "kr.co.zillocr.overlay.action.STOP"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_PROJECTION_DATA = "projection_data"
-        private const val OCR_INTERVAL_MS = 320L
+        private const val OCR_INTERVAL_MS = 250L
         private const val REQUIRED_STABLE_HITS = 2
         private const val SAME_TEXT_SIMILARITY = 0.92
         private const val CANDIDATE_SIMILARITY = 0.90
+        private const val IMAGE_SAMPLE_COLUMNS = 32
+        private const val IMAGE_SAMPLE_ROWS = 18
+        private const val IMAGE_CHANGE_OCR_THRESHOLD = 0.6
+        private const val MIN_VISUAL_CHANGE_FOR_NEW_TEXT = 0.08
+        private const val UNCHANGED_FRAME_PROBE_MS = 1_500L
+        private const val FAST_ACCEPT_FRAME_CHANGE = 16.0
+        private const val FAST_ACCEPT_MIN_CHARS = 12
+        private const val FAST_ACCEPT_MIN_JAPANESE_CHARS = 8
+        private const val FAST_ACCEPT_JAPANESE_RATIO = 0.70
+        private const val FAST_ACCEPT_MAX_PREVIOUS_SIMILARITY = 0.35
+        private const val PERF_TAG = "ZillPerf"
         private const val OCR_IGNORED_PUNCTUATION = "、。,.!！?？:：;；'\"「」『』()（）[]【】<>＜＞・…―ー-~～"
         private val ALPHA_LEVELS = intArrayOf(255, 191, 128, 64, 26, 0)
         private const val NOTIFICATION_CHANNEL_ID = "zill_ocr_capture"
