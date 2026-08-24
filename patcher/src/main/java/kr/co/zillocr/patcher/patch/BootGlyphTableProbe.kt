@@ -1,35 +1,15 @@
 package kr.co.zillocr.patcher.patch
 
 /**
- * Read-only executable scanner for a CP932/glyph lookup table.
+ * Read-only executable probe for the game's CP932 -> glyph mapping path.
  *
- * The first probe found dense CP932 regions inside the fixed-string area. Those
- * are useful negative controls, but dense membership alone is not sufficient to
- * identify the renderer lookup. This version explicitly distinguishes string-like
- * blobs from record-like key/index tables and also searches much longer windows.
+ * v2 showed no convincing key/index record table. v3 therefore keeps the
+ * negative-control data scan, but also searches MIPS code for clusters of
+ * Shift-JIS range-check immediates. If the mapping is algorithmic rather than
+ * table-driven, the decoder/renderer should contain several of these constants
+ * close together.
  */
 object BootGlyphTableProbe {
-    data class Candidate(
-        val file: String,
-        val stride: Int,
-        val fieldOffset: Int,
-        val start: Int,
-        val windowEntries: Int,
-        val hits: Int,
-        val uniqueHits: Int,
-        val adjacentMetricHits: Int,
-        val adjacentGlyphRangeHits: Int,
-        val adjacentUnique: Int,
-        val monotonicIndexHits: Int,
-    ) {
-        val ratio: Double get() = hits.toDouble() / windowEntries
-        val adjacentMetricRatio: Double get() = adjacentMetricHits.toDouble() / windowEntries
-        val adjacentGlyphRangeRatio: Double get() = adjacentGlyphRangeHits.toDouble() / windowEntries
-        val likelyText: Boolean get() = stride >= 4 && adjacentMetricRatio > 0.65
-        val likelyRecordTable: Boolean get() =
-            stride >= 4 && ratio > 0.85 && adjacentMetricRatio < 0.25 && adjacentGlyphRangeRatio > 0.75 && adjacentUnique > windowEntries / 2
-    }
-
     data class LongRun(
         val file: String,
         val start: Int,
@@ -40,74 +20,74 @@ object BootGlyphTableProbe {
         val ratio: Double get() = hits.toDouble() / entries
     }
 
+    data class SjisCodeCandidate(
+        val file: String,
+        val start: Int,
+        val end: Int,
+        val matches: Int,
+        val distinctImmediates: Int,
+        val details: List<String>,
+    )
+
     data class Result(
         val bootSize: Int,
         val ebootSize: Int,
-        val candidates: List<Candidate>,
         val longRuns: List<LongRun>,
+        val sjisCodeCandidates: List<SjisCodeCandidate>,
         val targetOccurrences: Map<String, List<String>>,
     ) {
         fun report(): String = buildString {
-            appendLine("executable glyph-table probe v2")
+            appendLine("executable glyph-table probe v3")
             appendLine("BOOT.BIN size: $bootSize")
             appendLine("EBOOT.BIN size: $ebootSize")
-            appendLine("strategy: reject CP932 text blobs; prefer key/index records with adjacent values in glyph-index range 0..3071")
-            appendLine("top record candidates:")
-            val recordLike = candidates.filter { it.likelyRecordTable }
-            if (recordLike.isEmpty()) appendLine("  none")
-            recordLike.take(12).forEachIndexed { i, c -> appendLine(formatCandidate(i + 1, c)) }
-            appendLine("top dense candidates (including negative-control text blobs):")
-            if (candidates.isEmpty()) appendLine("  none")
-            candidates.take(12).forEachIndexed { i, c -> appendLine(formatCandidate(i + 1, c)) }
-            appendLine("long contiguous metric-key windows (stride=2; a real repertoire table should stay dense for hundreds/thousands of entries):")
+            appendLine("v2 result carried forward: no convincing CP932 key/index record table was found")
+            appendLine("strategy now: look for MIPS code regions containing clustered Shift-JIS range-check immediates")
+            appendLine("Shift-JIS decoder code candidates:")
+            if (sjisCodeCandidates.isEmpty()) {
+                appendLine("  none")
+            } else {
+                sjisCodeCandidates.take(12).forEachIndexed { i, c ->
+                    appendLine(
+                        "  #${i + 1} ${c.file} 0x${c.start.toString(16).uppercase()}..0x${c.end.toString(16).uppercase()} " +
+                            "matches=${c.matches} distinct=${c.distinctImmediates}"
+                    )
+                    c.details.take(12).forEach { appendLine("      $it") }
+                }
+            }
+            appendLine("long contiguous metric-key windows (data negative controls):")
             if (longRuns.isEmpty()) appendLine("  none")
-            longRuns.take(10).forEachIndexed { i, r ->
-                appendLine("  #${i + 1} ${r.file} start=0x${r.start.toString(16).uppercase()} entries=${r.entries} hits=${r.hits} ratio=${"%.3f".format(r.ratio)} unique=${r.uniqueHits}")
+            longRuns.take(8).forEachIndexed { i, r ->
+                appendLine(
+                    "  #${i + 1} ${r.file} start=0x${r.start.toString(16).uppercase()} entries=${r.entries} " +
+                        "hits=${r.hits} ratio=${"%.3f".format(r.ratio)} unique=${r.uniqueHits}"
+                )
             }
             appendLine("target-key occurrences (u16 little-endian metric-key representation):")
             targetOccurrences.forEach { (label, values) ->
-                appendLine("  $label: ${if (values.isEmpty()) "none" else values.take(20).joinToString("  ")}")
+                appendLine("  $label: ${if (values.isEmpty()) "none" else values.take(12).joinToString("  ")}")
             }
-            append("Interpretation: likelyText=true means the previous dense hit is probably packed game text, not a glyph table. A strong lookup candidate needs key density plus a non-text adjacent field that behaves like a 0..3071 glyph index. No writes are enabled.")
+            append(
+                "Interpretation: v2 makes a flat key/index lookup table unlikely. A strong v3 code candidate has several distinct " +
+                    "Shift-JIS boundary constants (81/9F/E0/FC and 40/7F/80/FC, or signed-subtract forms) in one small MIPS region. " +
+                    "No writes are enabled."
+            )
         }.trimEnd()
-
-        private fun formatCandidate(rank: Int, c: Candidate): String =
-            "  #$rank ${c.file} stride=${c.stride} field=${c.fieldOffset} start=0x${c.start.toString(16).uppercase()} " +
-                "hits=${c.hits}/${c.windowEntries} ratio=${"%.3f".format(c.ratio)} unique=${c.uniqueHits} " +
-                "adjMetric=${c.adjacentMetricHits}/${c.windowEntries} adjGlyph=${c.adjacentGlyphRangeHits}/${c.windowEntries} " +
-                "adjUnique=${c.adjacentUnique} indexStep=${c.monotonicIndexHits} likelyText=${c.likelyText} likelyRecord=${c.likelyRecordTable}"
     }
 
     fun analyze(boot: ByteArray, eboot: ByteArray, metrics: List<UpstreamMetrics.Entry>): Result {
         val keySet = metrics.mapTo(HashSet(metrics.size * 2)) { it.key and 0xffff }
         val files = listOf("BOOT.BIN" to boot, "EBOOT.BIN" to eboot)
-        val candidates = mutableListOf<Candidate>()
-        for ((name, data) in files) {
-            for (stride in intArrayOf(4, 8)) {
-                for (field in 0 until stride step 2) {
-                    candidates += scanDense(name, data, keySet, stride, field)
-                }
-            }
-        }
-        val best = candidates
-            .sortedWith(compareByDescending<Candidate> { it.likelyRecordTable }
-                .thenByDescending { it.ratio }
-                .thenByDescending { it.adjacentGlyphRangeRatio }
-                .thenByDescending { it.uniqueHits }
-                .thenBy { it.adjacentMetricRatio })
-            .filterIndexed { index, c ->
-                index < 80 && candidates.none { other ->
-                    other !== c && other.file == c.file && other.stride == c.stride && other.fieldOffset == c.fieldOffset &&
-                        kotlin.math.abs(other.start - c.start) < 256 &&
-                        (other.likelyRecordTable && !c.likelyRecordTable ||
-                            other.ratio > c.ratio || (other.ratio == c.ratio && other.start < c.start))
-                }
-            }
-            .take(24)
 
         val longRuns = files.flatMap { (name, data) -> scanLongMetricWindows(name, data, keySet) }
             .sortedWith(compareByDescending<LongRun> { it.ratio }.thenByDescending { it.uniqueHits })
             .take(12)
+
+        val codeCandidates = files.flatMap { (name, data) -> scanSjisMipsCode(name, data) }
+            .sortedWith(
+                compareByDescending<SjisCodeCandidate> { it.distinctImmediates }
+                    .thenByDescending { it.matches }
+            )
+            .take(16)
 
         val targets = linkedMapOf(
             "0/0x0030" to 0x0030,
@@ -133,87 +113,112 @@ object BootGlyphTableProbe {
             }
             occurrences[label] = found
         }
-        return Result(boot.size, eboot.size, best, longRuns, occurrences)
+        return Result(boot.size, eboot.size, longRuns, codeCandidates, occurrences)
     }
 
-    private fun scanDense(
-        file: String,
-        data: ByteArray,
-        keySet: Set<Int>,
-        stride: Int,
-        fieldOffset: Int,
-    ): List<Candidate> {
-        val window = 128
-        val out = mutableListOf<Candidate>()
-        val maxStart = data.size - (window - 1) * stride - fieldOffset - 2
-        if (maxStart <= 0) return out
-        var start = 0
-        while (start <= maxStart) {
-            var hits = 0
-            val unique = HashSet<Int>()
-            var adjacentMetricHits = 0
-            var adjacentGlyphHits = 0
-            val adjacentUnique = HashSet<Int>()
-            var monotonic = 0
-            var previousIndex: Int? = null
-            for (i in 0 until window) {
-                val pos = start + i * stride + fieldOffset
-                val value = u16(data, pos)
-                if (value in keySet) {
-                    hits++
-                    unique += value
-                }
-                val adjacent = when {
-                    fieldOffset + 2 < stride -> pos + 2
-                    fieldOffset >= 2 -> pos - 2
-                    else -> -1
-                }
-                if (adjacent >= 0 && adjacent + 1 < data.size) {
-                    val idx = u16(data, adjacent)
-                    if (idx in keySet) adjacentMetricHits++
-                    if (idx in 0..3071) adjacentGlyphHits++
-                    adjacentUnique += idx
-                    val prev = previousIndex
-                    if (prev != null && idx == prev + 1) monotonic++
-                    previousIndex = idx
-                }
+    /**
+     * Search aligned MIPS words. We intentionally only inspect the immediate
+     * field of opcodes that commonly implement comparisons/arithmetic/bit masks.
+     */
+    private fun scanSjisMipsCode(file: String, data: ByteArray): List<SjisCodeCandidate> {
+        val interesting = setOf(
+            0x0040, 0x007f, 0x0080, 0x0081, 0x009f, 0x00e0, 0x00fc,
+            // Common signed forms after addiu/subtract-style normalization.
+            0xff7f, 0xff61, 0xff60, 0xff20, 0xff04,
+            // Typical range widths produced after normalization.
+            0x001f, 0x003c, 0x003f, 0x00bc, 0x00bd,
+        )
+        val allowedOpcodes = setOf(
+            0x08, // addi
+            0x09, // addiu
+            0x0a, // slti
+            0x0b, // sltiu
+            0x0c, // andi
+            0x0d, // ori
+            0x0e, // xori
+            0x0f, // lui
+            0x20, // lb
+            0x24, // lbu
+            0x21, // lh
+            0x25, // lhu
+        )
+        data class Hit(val offset: Int, val word: Int, val imm: Int, val opcode: Int)
+        val hits = mutableListOf<Hit>()
+        var off = 0
+        while (off + 3 < data.size) {
+            val word = u32(data, off)
+            val opcode = (word ushr 26) and 0x3f
+            val imm = word and 0xffff
+            if (opcode in allowedOpcodes && imm in interesting) {
+                hits += Hit(off, word, imm, opcode)
             }
-            if (hits >= 80) {
-                out += Candidate(
-                    file, stride, fieldOffset, start, window, hits, unique.size,
-                    adjacentMetricHits, adjacentGlyphHits, adjacentUnique.size, monotonic
-                )
-            }
-            start += 2
+            off += 4
         }
-        return out
+        if (hits.isEmpty()) return emptyList()
+
+        // Cluster hits whose total span fits within 0x100 bytes. This is small
+        // enough to resemble one decoder/helper routine rather than random code.
+        val out = mutableListOf<SjisCodeCandidate>()
+        var left = 0
+        for (right in hits.indices) {
+            while (hits[right].offset - hits[left].offset > 0x100) left++
+            val count = right - left + 1
+            if (count < 4) continue
+            val slice = hits.subList(left, right + 1)
+            val distinct = slice.map { it.imm }.toSet().size
+            if (distinct < 3) continue
+            val start = (slice.first().offset - 0x20).coerceAtLeast(0) and -4
+            val end = (slice.last().offset + 0x24).coerceAtMost(data.size) and -4
+            val details = slice.map {
+                "@0x${it.offset.toString(16).uppercase()} word=0x${it.word.toUInt().toString(16).uppercase().padStart(8, '0')} " +
+                    "op=0x${it.opcode.toString(16).uppercase()} imm=0x${it.imm.toString(16).uppercase().padStart(4, '0')}"
+            }
+            out += SjisCodeCandidate(file, start, end, count, distinct, details)
+        }
+
+        return out.sortedWith(
+            compareByDescending<SjisCodeCandidate> { it.distinctImmediates }
+                .thenByDescending { it.matches }
+        ).filterIndexed { index, c ->
+            index < 80 && out.none { other ->
+                other !== c && other.file == c.file && kotlin.math.abs(other.start - c.start) < 0x80 &&
+                    (other.distinctImmediates > c.distinctImmediates ||
+                        other.distinctImmediates == c.distinctImmediates && other.matches > c.matches)
+            }
+        }.take(20)
     }
 
     private fun scanLongMetricWindows(file: String, data: ByteArray, keySet: Set<Int>): List<LongRun> {
+        val entries = 512
+        val stepBytes = 0x20
         val out = mutableListOf<LongRun>()
-        for (window in intArrayOf(512, 1024, 2048)) {
-            val byteSpan = window * 2
-            if (data.size < byteSpan) continue
-            var start = 0
-            while (start + byteSpan <= data.size) {
-                var hits = 0
-                val unique = HashSet<Int>()
-                var pos = start
-                repeat(window) {
-                    val value = u16(data, pos)
-                    if (value in keySet) {
-                        hits++
-                        unique += value
-                    }
-                    pos += 2
+        val byteLength = entries * 2
+        if (data.size < byteLength) return out
+        var start = 0
+        while (start + byteLength <= data.size) {
+            var hits = 0
+            val unique = HashSet<Int>()
+            var p = start
+            repeat(entries) {
+                val v = u16(data, p)
+                if (v in keySet) {
+                    hits++
+                    unique += v
                 }
-                if (hits >= window * 3 / 4) out += LongRun(file, start, window, hits, unique.size)
-                start += 32
+                p += 2
             }
+            if (hits >= 400) out += LongRun(file, start, entries, hits, unique.size)
+            start += stepBytes
         }
         return out
     }
 
     private fun u16(data: ByteArray, offset: Int): Int =
         (data[offset].toInt() and 0xff) or ((data[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun u32(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xff) or
+            ((data[offset + 1].toInt() and 0xff) shl 8) or
+            ((data[offset + 2].toInt() and 0xff) shl 16) or
+            ((data[offset + 3].toInt() and 0xff) shl 24)
 }
