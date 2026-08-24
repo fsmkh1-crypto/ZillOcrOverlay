@@ -93,7 +93,7 @@ object GimFontProbe {
 
             Preview(
                 sectionIndex = section.index,
-                sectionName = section.name,
+                sectionName = "section-${section.index}",
                 image = parsed.image,
                 palette = parsed.palette,
                 retailArgb = retailArgb,
