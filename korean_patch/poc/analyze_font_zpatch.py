@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Analyze HK47196/zill's frozen zillfont XOR delta without retail assets.
+"""Analyze HK47196/zill's frozen zillfont XOR delta conservatively.
 
-The .zpatch is zlib-compressed and expands to an XOR stream the same size as
-font/zillfont.par. This script reports non-zero runs and alignment patterns so
-we can infer likely font-atlas/table regions before touching a retail ISO.
+This tool deliberately does *not* assume that metrics.toml sort order equals
+physical glyph order, nor that bitmap data begins at EOF - glyph_count*stride.
+It authenticates the upstream frozen XOR patch, reports changed regions and
+alignment/periodicity hints, and (when a retail zillfont.par is supplied) also
+reconstructs the authenticated English result for downstream structural scans.
 """
 
 from __future__ import annotations
@@ -11,15 +13,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import statistics
 import zlib
 from pathlib import Path
 
-EXPECTED_EXPANDED_SIZE = 525_424
+EXPECTED_SIZE = 525_424
+EXPECTED_SOURCE_SHA256 = "0d3d6d2648870e87a01636cdfc7cc7af8100ea40b71e5ed05f82ac197606584a"
+EXPECTED_RESULT_SHA256 = "0f11ca53076e072408fb3eb9ffa29446b02fb97642f4173b559691c463a2fdb8"
 EXPECTED_PATCH_SHA256 = "fcc46f805a970050d61b16ea00458731f1d56737fb04b0e04080f76c21465d89"
 EXPECTED_XOR_SHA256 = "7a48a683e523c07f641b9a70396555ce16d69ecccccc6fc6edbea50edd622aac"
 
 
-def runs(data: bytes):
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def nonzero_runs(data: bytes):
     start = None
     for i, value in enumerate(data):
         if value and start is None:
@@ -31,56 +41,121 @@ def runs(data: bytes):
         yield start, len(data)
 
 
+def gcd_of_deltas(starts: list[int]) -> int:
+    if len(starts) < 2:
+        return 0
+    g = 0
+    for a, b in zip(starts, starts[1:]):
+        d = b - a
+        if d:
+            g = math.gcd(g, d)
+    return g
+
+
+def alignment_histogram(starts: list[int], moduli=(2, 4, 8, 16, 32, 64, 128, 256)):
+    result = {}
+    for m in moduli:
+        counts = [0] * m
+        for s in starts:
+            counts[s % m] += 1
+        ranked = sorted(enumerate(counts), key=lambda x: x[1], reverse=True)[:8]
+        result[str(m)] = [{"remainder": r, "count": c} for r, c in ranked if c]
+    return result
+
+
+def block_touch_stats(data: bytes, sizes=(4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096)):
+    changed_indices = [i for i, v in enumerate(data) if v]
+    out = {}
+    for size in sizes:
+        touched = {i // size for i in changed_indices}
+        out[str(size)] = {
+            "touched_blocks": len(touched),
+            "total_blocks": (len(data) + size - 1) // size,
+            "coverage": len(touched) / ((len(data) + size - 1) // size),
+        }
+    return out
+
+
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    if len(a) != len(b):
+        raise ValueError("xor inputs differ in length")
+    return bytes(x ^ y for x, y in zip(a, b))
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("zpatch", type=Path)
-    parser.add_argument("--json", type=Path)
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("zpatch", type=Path)
+    p.add_argument("--retail-par", type=Path,
+                   help="optional exact retail font/zillfont.par; never modified")
+    p.add_argument("--reconstructed", type=Path,
+                   help="optional path to write reconstructed English result")
+    p.add_argument("--json", type=Path)
+    args = p.parse_args()
 
     compressed = args.zpatch.read_bytes()
-    patch_sha = hashlib.sha256(compressed).hexdigest()
-    if patch_sha != EXPECTED_PATCH_SHA256:
-        raise SystemExit(f"unexpected compressed patch sha256: {patch_sha}")
+    if sha256(compressed) != EXPECTED_PATCH_SHA256:
+        raise SystemExit("compressed patch SHA-256 mismatch")
 
     expanded = zlib.decompress(compressed)
-    xor_sha = hashlib.sha256(expanded).hexdigest()
-    if len(expanded) != EXPECTED_EXPANDED_SIZE:
-        raise SystemExit(f"unexpected expanded size: {len(expanded)}")
-    if xor_sha != EXPECTED_XOR_SHA256:
-        raise SystemExit(f"unexpected XOR sha256: {xor_sha}")
+    if len(expanded) != EXPECTED_SIZE:
+        raise SystemExit(f"unexpected XOR size: {len(expanded)}")
+    if sha256(expanded) != EXPECTED_XOR_SHA256:
+        raise SystemExit("expanded XOR SHA-256 mismatch")
 
-    nonzero_runs = list(runs(expanded))
-    changed = sum(end - start for start, end in nonzero_runs)
-    longest = sorted(nonzero_runs, key=lambda r: r[1] - r[0], reverse=True)[:40]
-
-    block_stats = {}
-    for block_size in (4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 2048, 4096):
-        touched = {
-            i // block_size
-            for i, value in enumerate(expanded)
-            if value
-        }
-        block_stats[str(block_size)] = {
-            "touched_blocks": len(touched),
-            "total_blocks": (len(expanded) + block_size - 1) // block_size,
-        }
+    runs = list(nonzero_runs(expanded))
+    starts = [s for s, _ in runs]
+    lengths = [e - s for s, e in runs]
+    changed = sum(lengths)
 
     report = {
+        "authenticated": True,
         "compressed_size": len(compressed),
         "expanded_size": len(expanded),
         "changed_bytes": changed,
         "changed_ratio": changed / len(expanded),
-        "run_count": len(nonzero_runs),
+        "run_count": len(runs),
+        "run_length": {
+            "min": min(lengths) if lengths else 0,
+            "max": max(lengths) if lengths else 0,
+            "median": statistics.median(lengths) if lengths else 0,
+            "mean": statistics.mean(lengths) if lengths else 0,
+        },
+        "start_delta_gcd": gcd_of_deltas(starts),
+        "alignment_histogram": alignment_histogram(starts),
+        "block_stats": block_touch_stats(expanded),
         "longest_runs": [
-            {"start": start, "end": end, "length": end - start}
-            for start, end in longest
+            {"start": s, "end": e, "length": e - s}
+            for s, e in sorted(runs, key=lambda r: r[1] - r[0], reverse=True)[:80]
         ],
-        "block_stats": block_stats,
+        "warnings": [
+            "metrics key order is NOT treated as physical glyph order",
+            "no bitmap-start or fixed-stride assumption is made",
+            "candidate layout must be validated against recognizable glyph imagery or renderer lookup",
+        ],
     }
 
-    print(json.dumps(report, indent=2))
+    if args.retail_par:
+        retail = args.retail_par.read_bytes()
+        if len(retail) != EXPECTED_SIZE:
+            raise SystemExit(f"retail zillfont.par size mismatch: {len(retail)}")
+        source_sha = sha256(retail)
+        if source_sha != EXPECTED_SOURCE_SHA256:
+            raise SystemExit(f"retail zillfont.par SHA-256 mismatch: {source_sha}")
+        english = xor_bytes(retail, expanded)
+        result_sha = sha256(english)
+        if result_sha != EXPECTED_RESULT_SHA256:
+            raise SystemExit(f"reconstructed English font SHA-256 mismatch: {result_sha}")
+        report["retail_source_sha256"] = source_sha
+        report["reconstructed_result_sha256"] = result_sha
+        report["reconstructed_result_verified"] = True
+        if args.reconstructed:
+            args.reconstructed.write_bytes(english)
+            report["reconstructed_path"] = str(args.reconstructed)
+
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    print(text)
     if args.json:
-        args.json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        args.json.write_text(text + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
