@@ -12,13 +12,16 @@ object UpstreamSourceFont {
     // downloaded bytes using Git's blob hash: SHA1("blob <size>\\0" + content).
     const val EXPECTED_GIT_BLOB_SHA1 = "3d7a318d95eb61077320ce1f5dfe66ccf5c65c4e"
 
+    @Volatile
+    private var authenticatedBytes: ByteArray? = null
+
     fun download(): ByteArray {
         val connection = (URL(URL).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
             instanceFollowRedirects = true
             requestMethod = "GET"
-            setRequestProperty("User-Agent", "ZillKoreanPatcher/0.9")
+            setRequestProperty("User-Agent", "ZillKoreanPatcher/1.0")
         }
         try {
             if (connection.responseCode !in 200..299) {
@@ -30,11 +33,15 @@ object UpstreamSourceFont {
             if (blob != EXPECTED_GIT_BLOB_SHA1) {
                 error("unexpected source font git blob SHA-1: $blob")
             }
+            authenticatedBytes = data.copyOf()
             return data
         } finally {
             connection.disconnect()
         }
     }
+
+    /** Returns the last authenticated font bytes for deterministic cmap probing. */
+    fun authenticatedSnapshot(): ByteArray? = authenticatedBytes?.copyOf()
 
     private fun gitBlobSha1(data: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-1")
