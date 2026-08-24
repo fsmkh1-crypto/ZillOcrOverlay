@@ -38,6 +38,9 @@ jobs:
           python3 korean_patch/poc/analyze_otf_cmap_mapping.py \
             upstream-zill/release/font/fs-tahoma-8px.otf \
             --json otf-cmap-mapping.json
+          python3 korean_patch/poc/analyze_metric_slot_geometry.py \
+            upstream-zill/release/font/metrics.toml \
+            --json metric-slot-geometry.json
           echo '### zillfont XOR analysis' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
@@ -45,6 +48,10 @@ jobs:
           echo '### OTF cmap / physical atlas diagnostic' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat otf-cmap-mapping.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo '### 15x16 metric-slot geometry diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metric-slot-geometry.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Inspect upstream font history
@@ -79,6 +86,7 @@ jobs:
             font-delta-atlas/
             upstream-font-history.txt
             otf-cmap-mapping.json
+            metric-slot-geometry.json
           if-no-files-found: error
           retention-days: 14
 
