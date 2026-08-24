@@ -19,7 +19,7 @@ import kr.co.zillocr.patcher.patch.UpstreamMetrics
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 2.0: trace deeper text-conversion and renderer helpers toward code-unit -> glyph mapping. */
+/** PoC 2.1: trace text parser/classifier into glyph descriptor selection. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -27,11 +27,8 @@ class GlyphTableActivity : ComponentActivity() {
 
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
-        try {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (_: SecurityException) {
-        }
-        statusView.text = "text conversion / glyph mapper 심층 추적 중…"
+        try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: SecurityException) {}
+        statusView.text = "text parser → glyph descriptor 경로 추적 중…"
         executor.execute {
             val report = try {
                 val metrics = UpstreamMetrics.downloadEntries()
@@ -40,8 +37,7 @@ class GlyphTableActivity : ComponentActivity() {
                         val iso = Iso9660Reader(channel)
                         val boot = iso.readEntry(iso.find("PSP_GAME/SYSDIR/BOOT.BIN"))
                         val eboot = iso.readEntry(iso.find("PSP_GAME/SYSDIR/EBOOT.BIN"))
-                        val base = BootGlyphTableProbe.analyze(boot, eboot, metrics).report()
-                        base + "\n\n" + MipsSjisTrace.report(boot)
+                        BootGlyphTableProbe.analyze(boot, eboot, metrics).report() + "\n\n" + MipsSjisTrace.report(boot)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -52,51 +48,33 @@ class GlyphTableActivity : ComponentActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(buildView())
-    }
-
-    override fun onDestroy() {
-        executor.shutdownNow()
-        super.onDestroy()
-    }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContentView(buildView()) }
+    override fun onDestroy() { executor.shutdownNow(); super.onDestroy() }
 
     private fun buildView(): ScrollView {
         val density = resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(28), dp(20), dp(28))
-        }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(28), dp(20), dp(28)) }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 2.0 · text conversion → glyph mapper 심층 추적\n1.9에서 0x1463F4는 renderer orchestration/state 코드로 확인됐지만 atlas mapper 자체는 아니었습니다. 이번 판은 0x220130을 최우선으로, renderer/layout helper들을 한 단계 더 내려가 문자 코드가 실제 glyph 선택값으로 바뀌는 지점을 찾습니다."
-            textSize = 14f
-            setPadding(0, dp(10), 0, dp(14))
+            text = "PoC 2.1 · text parser → glyph descriptor 추적\n2.0에서 0x220130은 매퍼가 아닌 단순 helper로 배제됐습니다. 이번 판은 실제 renderer state loop가 호출하는 0x1F9A4C, 0x1F9A9C, 0x1FA028 및 geometry helper를 추적해 code unit이 glyph 선택값으로 바뀌는 지점을 찾습니다."
+            textSize = 14f; setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · glyph mapper deep trace"
+            text = "원본 ISO 선택 · parser/glyph trace"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
             text = "분석 결과 복사"
             setOnClickListener {
-                if (latestReport.isBlank()) {
-                    Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
-                } else {
-                    getSystemService(ClipboardManager::class.java)
-                        .setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v5", latestReport))
+                if (latestReport.isBlank()) Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
+                else {
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zill renderer glyph trace v6", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        statusView = TextView(this).apply {
-            text = "아직 분석하지 않았습니다."
-            textSize = 12f
-            setTextIsSelectable(true)
-            setPadding(0, dp(16), 0, 0)
-        }
+        statusView = TextView(this).apply { text = "아직 분석하지 않았습니다."; textSize = 12f; setTextIsSelectable(true); setPadding(0, dp(16), 0, 0) }
         root.addView(statusView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         return ScrollView(this).apply { addView(root) }
     }
