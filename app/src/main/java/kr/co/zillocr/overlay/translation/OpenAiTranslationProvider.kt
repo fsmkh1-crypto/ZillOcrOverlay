@@ -1,6 +1,8 @@
 package kr.co.zillocr.overlay.translation
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
 import kr.co.zillocr.overlay.data.AppContextHolder
 import kr.co.zillocr.overlay.data.IgnoreListStore
 import kr.co.zillocr.overlay.data.TranslationSettingsStore
@@ -8,14 +10,17 @@ import kr.co.zillocr.overlay.db.AppDatabase
 import kr.co.zillocr.overlay.db.OcrAliasEntity
 import kr.co.zillocr.overlay.db.SpeakerEntity
 import kr.co.zillocr.overlay.db.TranslationEntity
+import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.IOException
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.LinkedHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class TranslationCancelledException : IOException("translation cancelled")
 
@@ -38,7 +43,7 @@ class OpenAiTranslationProvider(
 
     private val connectionLock = Any()
     private val cancelled = AtomicBoolean(false)
-    @Volatile private var activeConnection: HttpURLConnection? = null
+    @Volatile private var activeCall: Call? = null
 
     @Volatile var lastSpeakerSource: String? = null
         private set
@@ -59,7 +64,7 @@ class OpenAiTranslationProvider(
 
     fun cancelInFlight() {
         cancelled.set(true)
-        synchronized(connectionLock) { activeConnection?.disconnect() }
+        synchronized(connectionLock) { activeCall?.cancel() }
     }
 
     private fun translateInternal(
@@ -504,8 +509,37 @@ class OpenAiTranslationProvider(
         throwIfCancelled()
         val requestBody = JSONObject().apply {
             put("model", selectedModel)
-            put("instructions", SYSTEM_INSTRUCTIONS)
-            put("input", input)
+            if (selectedModel.startsWith("gpt-5.6-")) {
+                put("input", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "developer")
+                        put("content", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("type", "input_text")
+                                put("text", SYSTEM_INSTRUCTIONS)
+                                put("prompt_cache_breakpoint", JSONObject().apply { put("mode", "explicit") })
+                            })
+                        })
+                    })
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("type", "input_text")
+                                put("text", input)
+                            })
+                        })
+                    })
+                })
+                put("prompt_cache_key", "$PROMPT_CACHE_KEY_PREFIX:$selectedModel")
+                put("prompt_cache_options", JSONObject().apply {
+                    put("mode", "explicit")
+                    put("ttl", "30m")
+                })
+            } else {
+                put("instructions", SYSTEM_INSTRUCTIONS)
+                put("input", input)
+            }
             put("store", false)
             put("max_output_tokens", maxOutputTokens)
             if (selectedModel.startsWith("gpt-5.6-") && !selectedModel.endsWith("-pro")) {
@@ -522,51 +556,54 @@ class OpenAiTranslationProvider(
             }
         }.toString()
 
-        val connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 8_000
-            readTimeout = if (selectedModel.contains("pro")) 45_000 else 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer $apiKey")
-        }
+        val request = Request.Builder()
+            .url(API_URL)
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer $apiKey")
+            .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        val client = if (selectedModel.contains("pro")) PRO_HTTP_CLIENT else HTTP_CLIENT
+        val call = client.newCall(request)
         synchronized(connectionLock) {
             if (cancelled.get()) {
-                connection.disconnect()
+                call.cancel()
                 throw TranslationCancelledException()
             }
-            activeConnection = connection
+            activeCall = call
         }
 
+        val startedAt = SystemClock.elapsedRealtime()
         try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(requestBody) }
-            throwIfCancelled()
-            val statusCode = connection.responseCode
-            val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-            val responseText = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-            throwIfCancelled()
-
-            if (statusCode !in 200..299) {
-                val message = runCatching {
-                    JSONObject(responseText).optJSONObject("error")?.optString("message", "")
-                }.getOrNull().orEmpty()
-                val friendly = when (statusCode) {
-                    401, 403 -> "OpenAI API 키 인증 또는 권한에 실패했습니다"
-                    429 -> "OpenAI 요청 한도에 걸렸습니다. 잠시 후 다시 시도하세요"
-                    in 500..599 -> "OpenAI 서버가 일시적으로 응답하지 않습니다 (HTTP $statusCode)"
-                    else -> message.ifBlank { "OpenAI API HTTP $statusCode" }
+            call.execute().use { response ->
+                throwIfCancelled()
+                val responseText = response.body?.string().orEmpty()
+                throwIfCancelled()
+                if (!response.isSuccessful) {
+                    val message = runCatching {
+                        JSONObject(responseText).optJSONObject("error")?.optString("message", "")
+                    }.getOrNull().orEmpty()
+                    val friendly = when (response.code) {
+                        401, 403 -> "OpenAI API 키 인증 또는 권한에 실패했습니다"
+                        429 -> "OpenAI 요청 한도에 걸렸습니다. 잠시 후 다시 시도하세요"
+                        in 500..599 -> "OpenAI 서버가 일시적으로 응답하지 않습니다 (HTTP ${response.code})"
+                        else -> message.ifBlank { "OpenAI API HTTP ${response.code}" }
+                    }
+                    throw IllegalStateException(friendly)
                 }
-                throw IllegalStateException(friendly)
+                val parsed = extractResponse(responseText)
+                Log.d(
+                    PERF_TAG,
+                    "api ${SystemClock.elapsedRealtime() - startedAt}ms model=$selectedModel cacheRead=${parsed.cachedInputTokens} cacheWrite=${parsed.cacheWriteTokens}"
+                )
+                return parsed
             }
-            return extractResponse(responseText)
         } catch (io: IOException) {
-            if (cancelled.get()) throw TranslationCancelledException()
+            if (cancelled.get() || call.isCanceled()) throw TranslationCancelledException()
             throw io
         } finally {
             synchronized(connectionLock) {
-                if (activeConnection === connection) activeConnection = null
+                if (activeCall === call) activeCall = null
             }
-            connection.disconnect()
         }
     }
 
@@ -579,10 +616,13 @@ class OpenAiTranslationProvider(
         val responseModel = root.optString("model", "")
         val status = root.optString("status", "")
         val incompleteReason = root.optJSONObject("incomplete_details")?.optString("reason", "").orEmpty()
+        val usageDetails = root.optJSONObject("usage")?.optJSONObject("input_tokens_details")
+        val cachedInputTokens = usageDetails?.optInt("cached_tokens", 0) ?: 0
+        val cacheWriteTokens = usageDetails?.optInt("cache_write_tokens", 0) ?: 0
         val direct = root.optString("output_text", "")
-        if (direct.isNotBlank()) return ApiResponse(direct.trim(), responseModel, status, incompleteReason)
+        if (direct.isNotBlank()) return ApiResponse(direct.trim(), responseModel, status, incompleteReason, cachedInputTokens, cacheWriteTokens)
 
-        val output = root.optJSONArray("output") ?: return ApiResponse("", responseModel, status, incompleteReason)
+        val output = root.optJSONArray("output") ?: return ApiResponse("", responseModel, status, incompleteReason, cachedInputTokens, cacheWriteTokens)
         val parts = mutableListOf<String>()
         for (i in 0 until output.length()) {
             val item = output.optJSONObject(i) ?: continue
@@ -594,14 +634,16 @@ class OpenAiTranslationProvider(
                 block.optString("text", "").takeIf { it.isNotBlank() }?.let { parts += it }
             }
         }
-        return ApiResponse(parts.joinToString("\n").trim(), responseModel, status, incompleteReason)
+        return ApiResponse(parts.joinToString("\n").trim(), responseModel, status, incompleteReason, cachedInputTokens, cacheWriteTokens)
     }
 
     private data class ApiResponse(
         val text: String,
         val model: String,
         val status: String,
-        val incompleteReason: String
+        val incompleteReason: String,
+        val cachedInputTokens: Int,
+        val cacheWriteTokens: Int
     )
 
     companion object {
@@ -621,6 +663,18 @@ class OpenAiTranslationProvider(
 
         private const val API_URL = "https://api.openai.com/v1/responses"
         private const val DEFAULT_MODEL = TranslationSettingsStore.DEFAULT_MODEL
+        private const val PROMPT_CACHE_KEY_PREFIX = "zill-rpg-core-v1"
+        private const val PERF_TAG = "ZillPerf"
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        private val HTTP_CLIENT = OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+        private val PRO_HTTP_CLIENT = HTTP_CLIENT.newBuilder()
+            .readTimeout(45, TimeUnit.SECONDS)
+            .build()
         private const val MAX_CACHE_ENTRIES = 256
         private const val MAX_GLOSSARY_TERMS = 48
         private const val MAX_ATTEMPTS = 2

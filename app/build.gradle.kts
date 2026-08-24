@@ -14,8 +14,8 @@ android {
         applicationId = "kr.co.zillocr.overlay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 25
-        versionName = "0.5.0-alpha8.4"
+        versionCode = 26
+        versionName = "0.5.0-alpha8.5"
     }
 
     buildTypes {
@@ -44,6 +44,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.12.4")
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     val roomVersion = "2.8.4"
     implementation("androidx.room:room-runtime:$roomVersion")
