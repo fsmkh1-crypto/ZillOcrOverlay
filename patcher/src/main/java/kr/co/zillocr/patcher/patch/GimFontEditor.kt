@@ -4,10 +4,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Minimal guarded writer for one 16x16 cell inside an authenticated zillfont GIM.
+ * Guarded in-memory writer for authenticated zillfont GIM atlas regions.
  *
- * This is deliberately an in-memory primitive: callers decide whether the result is
- * preview-only or later written into a copied ISO. It never writes the source ISO.
+ * Callers decide whether the result is preview-only or later copied into a new ISO.
+ * This primitive never writes the source ISO itself.
  */
 object GimFontEditor {
     data class EditResult(
@@ -30,13 +30,53 @@ object GimFontEditor {
 
     private data class Parsed(val image: Surface, val palette: Surface)
 
+    /** Legacy 16x16 diagnostic cell writer retained for reproducibility of PoC 1.1. */
     fun replaceBinaryCell(
         font: ByteArray,
         section: ZillFontIsoAnalyzer.ParSection,
         ordinal: Int,
         mask: BooleanArray,
+    ): EditResult = replaceBinarySlot(
+        font = font,
+        section = section,
+        ordinal = ordinal,
+        slotWidth = 16,
+        slotHeight = 16,
+        columns = 32,
+        mask = mask,
+    )
+
+    /**
+     * Confirmed geometry writer: 15x16 slots, 34 columns, 32 rows (1088/page).
+     * The final two pixels at the right edge of each 512px row are not part of a slot.
+     */
+    fun replaceBinaryMetricSlot(
+        font: ByteArray,
+        section: ZillFontIsoAnalyzer.ParSection,
+        ordinal: Int,
+        mask: BooleanArray,
+    ): EditResult = replaceBinarySlot(
+        font = font,
+        section = section,
+        ordinal = ordinal,
+        slotWidth = 15,
+        slotHeight = 16,
+        columns = 34,
+        mask = mask,
+    )
+
+    private fun replaceBinarySlot(
+        font: ByteArray,
+        section: ZillFontIsoAnalyzer.ParSection,
+        ordinal: Int,
+        slotWidth: Int,
+        slotHeight: Int,
+        columns: Int,
+        mask: BooleanArray,
     ): EditResult {
-        require(mask.size == 16 * 16) { "glyph mask must be 16x16" }
+        require(mask.size == slotWidth * slotHeight) {
+            "glyph mask must be ${slotWidth}x${slotHeight}"
+        }
         require(section.start >= 0 && section.endExclusive <= font.size && section.start < section.endExclusive) {
             "PAR section outside font"
         }
@@ -45,7 +85,11 @@ object GimFontEditor {
         require(parsed.image.width == 512 && parsed.image.height == 512 && parsed.image.bits == 4) {
             "expected 512x512 4bpp font GIM"
         }
-        require(ordinal in 0 until 32 * 32) { "cell ordinal outside 32x32 atlas" }
+        val rows = parsed.image.height / slotHeight
+        require(columns * slotWidth <= parsed.image.width) { "slot geometry exceeds atlas width" }
+        require(ordinal in 0 until columns * rows) {
+            "slot ordinal $ordinal outside ${columns}x${rows} atlas"
+        }
 
         val alphas = paletteAlphas(child, parsed.palette)
         require(alphas.isNotEmpty()) { "empty GIM palette" }
@@ -53,12 +97,15 @@ object GimFontEditor {
         val opaque = alphas.indices.maxByOrNull { alphas[it] } ?: error("no opaque palette index")
         require(alphas[opaque] > alphas[transparent]) { "font palette has no alpha range" }
 
-        val cellX = ordinal % 32
-        val cellY = ordinal / 32
-        for (y in 0 until 16) {
-            for (x in 0 until 16) {
-                val index = if (mask[y * 16 + x]) opaque else transparent
-                writeIndex(child, parsed.image, cellX * 16 + x, cellY * 16 + y, index)
+        val col = ordinal % columns
+        val row = ordinal / columns
+        val x0 = col * slotWidth
+        val y0 = row * slotHeight
+        require(x0 + slotWidth <= parsed.image.width && y0 + slotHeight <= parsed.image.height)
+        for (y in 0 until slotHeight) {
+            for (x in 0 until slotWidth) {
+                val index = if (mask[y * slotWidth + x]) opaque else transparent
+                writeIndex(child, parsed.image, x0 + x, y0 + y, index)
             }
         }
 
