@@ -72,36 +72,33 @@ def psp_unswizzle_bytes(swizzled: bytes, width_bytes: int, height: int) -> bytes
     return bytes(out)
 
 
-def bounding_box(mask: bytes, width: int, height: int):
-    xs = []
-    ys = []
-    for i, value in enumerate(mask):
-        if value:
-            xs.append(i % width)
-            ys.append(i // width)
-    if not xs:
+def changed_coords(mask: bytes, width: int):
+    return [(i % width, i // width) for i, value in enumerate(mask) if value]
+
+
+def bounding_box_from_coords(coords):
+    if not coords:
         return None
+    xs = [x for x, _ in coords]
+    ys = [y for _, y in coords]
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
-def cell_counts(mask: bytes, width: int, height: int, cell: int, phase_x: int = 0, phase_y: int = 0):
+def cell_counts_from_coords(coords, cell: int, phase_x: int = 0, phase_y: int = 0):
     counts = {}
-    for y in range(height):
-        for x in range(width):
-            if not mask[y * width + x]:
-                continue
-            cx = (x - phase_x) // cell
-            cy = (y - phase_y) // cell
-            key = (cx, cy)
-            counts[key] = counts.get(key, 0) + 1
+    for x, y in coords:
+        cx = (x - phase_x) // cell
+        cy = (y - phase_y) // cell
+        key = (cx, cy)
+        counts[key] = counts.get(key, 0) + 1
     return counts
 
 
-def grid_phase_summary(mask: bytes, width: int, height: int, cell: int):
+def grid_phase_summary(coords, cell: int):
     best = None
     for py in range(cell):
         for px in range(cell):
-            counts = cell_counts(mask, width, height, cell, px, py)
+            counts = cell_counts_from_coords(coords, cell, px, py)
             occupied = len(counts)
             # Prefer fewer occupied cells, then more concentration in the top cells.
             top_sum = sum(sorted(counts.values(), reverse=True)[:64])
@@ -162,6 +159,7 @@ def main() -> None:
         linear_mask = byte_mask_to_4bpp_pixel_mask(payload)
         unswizzled_bytes = psp_unswizzle_bytes(payload, WIDTH_BYTES_4BPP, HEIGHT)
         unswizzled_mask = byte_mask_to_4bpp_pixel_mask(unswizzled_bytes)
+        coords = changed_coords(unswizzled_mask, WIDTH)
 
         linear_path = args.outdir / f"section{index}-linear-512x512-4bpp-mask.pgm"
         unswizzled_path = args.outdir / f"section{index}-unswizzled-512x512-4bpp-mask.pgm"
@@ -169,8 +167,8 @@ def main() -> None:
         save_pgm(unswizzled_path, WIDTH, HEIGHT, unswizzled_mask)
 
         changed_bytes = sum(1 for value in payload if value)
-        changed_pixels = sum(1 for value in unswizzled_mask if value)
-        grids = [grid_phase_summary(unswizzled_mask, WIDTH, HEIGHT, cell) for cell in (8, 12, 16, 20, 24, 32)] if changed_pixels else []
+        changed_pixels = len(coords)
+        grids = [grid_phase_summary(coords, cell) for cell in (8, 12, 16, 20, 24, 32)] if changed_pixels else []
 
         report["sections"].append({
             "index": index,
@@ -181,7 +179,7 @@ def main() -> None:
             "payload_size": len(payload),
             "changed_payload_bytes": changed_bytes,
             "changed_pixels_under_4bpp": changed_pixels,
-            "unswizzled_changed_bbox": bounding_box(unswizzled_mask, WIDTH, HEIGHT),
+            "unswizzled_changed_bbox": bounding_box_from_coords(coords),
             "grid_phase_hints": grids,
             "linear_mask": str(linear_path),
             "unswizzled_mask": str(unswizzled_path),
