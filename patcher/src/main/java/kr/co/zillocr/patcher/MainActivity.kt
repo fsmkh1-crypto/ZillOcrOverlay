@@ -4,7 +4,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
@@ -21,7 +24,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import kr.co.zillocr.patcher.patch.ExactGimIsoAnalyzer
 import kr.co.zillocr.patcher.patch.FontAtlasProbe
 import kr.co.zillocr.patcher.patch.FontGlyphMatcher
+import kr.co.zillocr.patcher.patch.GimFontEditor
 import kr.co.zillocr.patcher.patch.GimFontProbe
+import kr.co.zillocr.patcher.patch.Iso9660Reader
 import kr.co.zillocr.patcher.patch.UpstreamFontPatch
 import kr.co.zillocr.patcher.patch.UpstreamSourceFont
 import kr.co.zillocr.patcher.patch.ZillFontIsoAnalyzer
@@ -37,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     private val matchTargets = listOf("0", "A", "a", "ア", "イ", "テ", "ム", "腑", "躙", "綺")
     private val knownAsciiAnchors = mapOf("0" to 16, "A" to 31, "a" to 60)
+    private val hangulPocCells = listOf("아" to 16, "이" to 31, "템" to 60)
 
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -44,12 +50,13 @@ class MainActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ISO · GIM · upstream 원본 글꼴 매핑 분석 중…"
+        statusView.text = "ISO · GIM · OpenType · 한글 셀 쓰기 검증 중…"
         atlasContainer.removeAllViews()
         executor.execute {
             var heuristicPreviews: List<FontAtlasProbe.Preview> = emptyList()
             var exactPreviews: List<GimFontProbe.Preview> = emptyList()
             var matches: Map<String, List<FontGlyphMatcher.Match>> = emptyMap()
+            var hangulPreview: GimFontProbe.Preview? = null
             val report = try {
                 val patch = UpstreamFontPatch.download()
                 val sourceFontBytes = UpstreamSourceFont.download()
@@ -69,9 +76,35 @@ class MainActivity : ComponentActivity() {
                             topN = 3072,
                             typeface = sourceTypeface,
                         )
+
+                        if (result.matchesRetailFont && result.parSections.isNotEmpty()) {
+                            val iso = Iso9660Reader(channel)
+                            val paArc = iso.find("PSP_GAME/USRDIR/pa.arc")
+                            val retailFont = iso.readEntryRange(paArc, result.memberOffset, result.memberSize)
+                            val page0 = result.parSections.firstOrNull { it.index == 0 }
+                                ?: error("zillfont PAR page 0 missing")
+                            var edited = retailFont
+                            val paletteFacts = mutableListOf<String>()
+                            hangulPocCells.forEach { (text, ordinal) ->
+                                val edit = GimFontEditor.replaceBinaryCell(
+                                    edited,
+                                    page0,
+                                    ordinal,
+                                    rasterizeGlyphMask(text),
+                                )
+                                edited = edit.font
+                                paletteFacts += "$text=s0:$ordinal(palette ${edit.transparentPaletteIndex}->${edit.opaquePaletteIndex})"
+                            }
+                            hangulPreview = GimFontProbe.build(retailFont, edited, result.parSections)
+                                .firstOrNull { it.sectionIndex == 0 }
+                            if (hangulPreview == null) error("failed to decode in-memory Hangul preview")
+                            latestHangulFacts = paletteFacts.joinToString(" · ")
+                        }
+
                         result.toReport() + "\n\n" + exact.report + "\n\n" + sourceFontReport() +
                             "\n\n" + FontGlyphMatcher.cmapDiagnosticReport(matchTargets) +
-                            "\n\n" + matcherReport(matches)
+                            "\n\n" + matcherReport(matches) +
+                            "\n\n" + hangulWriteReport(hangulPreview)
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
@@ -80,10 +113,13 @@ class MainActivity : ComponentActivity() {
             latestReport = report
             runOnUiThread {
                 statusView.text = report
-                renderPreviews(exactPreviews, heuristicPreviews, matches)
+                renderPreviews(exactPreviews, heuristicPreviews, matches, hangulPreview)
             }
         }
     }
+
+    @Volatile
+    private var latestHangulFacts: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,12 +141,12 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 1.0 · OpenType glyph-ID 물리 셀 검증\n0/A/a의 실제 셀과 cmap glyph ID 관계를 수치로 검증합니다."
+            text = "PoC 1.1 · OpenType 검증 + 한글 셀 쓰기 메모리 프리뷰\n아직 ISO에는 어떤 바이트도 쓰지 않습니다."
             textSize = 14f
             setPadding(0, dp(12), 0, dp(16))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · 글리프 매핑 검증"
+            text = "원본 ISO 선택 · 안전한 메모리 검증"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -140,12 +176,42 @@ class MainActivity : ComponentActivity() {
         exact: List<GimFontProbe.Preview>,
         heuristic: List<FontAtlasProbe.Preview>,
         matches: Map<String, List<FontGlyphMatcher.Match>>,
+        hangulPreview: GimFontProbe.Preview?,
     ) {
         atlasContainer.removeAllViews()
+        if (hangulPreview != null) renderHangulWritePreview(hangulPreview)
         if (exact.isNotEmpty()) {
             renderMatcher(matches, exact)
             renderExactGimPreviews(exact)
         } else renderHeuristicPreviews(heuristic)
+    }
+
+    private fun renderHangulWritePreview(preview: GimFontProbe.Preview) {
+        atlasContainer.addView(TextView(this).apply {
+            text = "한글 셀 쓰기 · 메모리 프리뷰"
+            textSize = 20f
+        })
+        atlasContainer.addView(TextView(this).apply {
+            text = "검증된 raw cell 16/31/60을 임시로 아/이/템으로 다시 그린 결과입니다. 원본 ISO는 읽기 전용이며 아직 저장·수정하지 않습니다."
+            textSize = 13f
+            setPadding(0, 8, 0, 12)
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        hangulPocCells.forEach { (text, ordinal) ->
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(6, 0, 6, 0)
+            }
+            box.addView(TextView(this).apply {
+                this.text = "$text\ns0:$ordinal"
+                textSize = 12f
+                gravity = Gravity.CENTER
+            })
+            box.addView(highContrastCellView(preview.englishArgb, ordinal))
+            row.addView(box)
+        }
+        atlasContainer.addView(row, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     private fun renderMatcher(
@@ -156,6 +222,7 @@ class MainActivity : ComponentActivity() {
         atlasContainer.addView(TextView(this).apply {
             text = "OpenType cmap / 물리 셀 검증"
             textSize = 20f
+            setPadding(0, 18, 0, 0)
         })
         atlasContainer.addView(TextView(this).apply {
             text = FontGlyphMatcher.cmapDiagnosticReport(matchTargets)
@@ -189,7 +256,8 @@ class MainActivity : ComponentActivity() {
                     textSize = 10f
                     gravity = Gravity.CENTER
                 })
-                box.addView(highContrastCellView(page.retailArgb, match.ordinal))
+                // The matcher ranks the reconstructed English atlas, so show the same bytes.
+                box.addView(highContrastCellView(page.englishArgb, match.ordinal))
                 row.addView(box)
             }
             atlasContainer.addView(HorizontalScrollView(this).apply { addView(row) }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -215,6 +283,29 @@ class MainActivity : ComponentActivity() {
             setImageBitmap(scaled)
             layoutParams = ViewGroup.LayoutParams(112, 112)
         }
+    }
+
+    private fun rasterizeGlyphMask(text: String): BooleanArray {
+        val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint().apply {
+            isAntiAlias = false
+            isSubpixelText = false
+            color = Color.WHITE
+            textSize = 15f
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        }
+        val bounds = Rect()
+        paint.getTextBounds(text, 0, text.length, bounds)
+        val x = (16f - bounds.width()) / 2f - bounds.left
+        val y = (16f - bounds.height()) / 2f - bounds.top
+        canvas.drawText(text, x, y, paint)
+        val pixels = IntArray(16 * 16)
+        bitmap.getPixels(pixels, 0, 16, 0, 0, 16, 16)
+        bitmap.recycle()
+        val mask = BooleanArray(16 * 16) { i -> ((pixels[i] ushr 24) and 0xff) > 0 }
+        require(mask.any { it }) { "Android system font could not rasterize '$text'" }
+        return mask
     }
 
     private fun asciiValidationSummary(matches: Map<String, List<FontGlyphMatcher.Match>>): String {
@@ -256,6 +347,15 @@ class MainActivity : ComponentActivity() {
             appendLine()
         }
         append("Japanese/surrogate rankings are trustworthy only after deterministic cmap validation or explicit ASCII validation passes.")
+    }.trimEnd()
+
+    private fun hangulWriteReport(preview: GimFontProbe.Preview?): String = buildString {
+        appendLine("in-memory Hangul cell-write PoC")
+        appendLine("source ISO write operations: NONE")
+        appendLine("temporary surrogate cells: 0x30('0')->s0:16, 0x41('A')->s0:31, 0x61('a')->s0:60")
+        appendLine("preview target: 0Aa visually becomes 아이템 after those three cells are replaced")
+        appendLine("palette selection: ${if (latestHangulFacts.isBlank()) "unavailable" else latestHangulFacts}")
+        append("memory preview decode: ${if (preview != null) "PASS" else "FAIL"}")
     }.trimEnd()
 
     private fun renderExactGimPreviews(previews: List<GimFontProbe.Preview>) {
