@@ -32,6 +32,13 @@ EXPECTED_XOR_SHA256 = "7a48a683e523c07f641b9a70396555ce16d69ecccccc6fc6edbea50ed
 # PAR\0, version=2, count=4, unknown=1, starts below.
 PAR_SECTION_STARTS = (0x0000C0, 0x0201B0, 0x0402A0, 0x060390)
 SHIFT_CANDIDATES = (8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512)
+CANONICAL_PAYLOAD = 0x20000
+CANONICAL_PAYLOAD_GEOMETRIES = [
+    {"width": 512, "height": 512, "bpp": 4},
+    {"width": 512, "height": 256, "bpp": 8},
+    {"width": 256, "height": 512, "bpp": 8},
+    {"width": 256, "height": 256, "bpp": 16},
+]
 
 
 def sha256(data: bytes) -> str:
@@ -97,6 +104,20 @@ def section_analysis(data: bytes):
         changed_positions = {i for i, value in enumerate(section) if value}
         relative_changed_sets.append(changed_positions)
         lengths = [e - s for s, e in runs]
+
+        prefix_candidate = len(section) - CANONICAL_PAYLOAD if len(section) >= CANONICAL_PAYLOAD else None
+        prefix_100_changed = sum(1 for pos in changed_positions if pos < 0x100)
+        prefix_candidate_changed = (
+            sum(1 for pos in changed_positions if pos < prefix_candidate)
+            if prefix_candidate is not None and prefix_candidate >= 0
+            else None
+        )
+        payload_candidate_changed = (
+            sum(1 for pos in changed_positions if pos >= prefix_candidate)
+            if prefix_candidate is not None and prefix_candidate >= 0
+            else None
+        )
+
         sections.append({
             "index": index,
             "start": start,
@@ -107,6 +128,17 @@ def section_analysis(data: bytes):
             "run_count": len(runs),
             "max_run": max(lengths) if lengths else 0,
             "median_run": statistics.median(lengths) if lengths else 0,
+            "first_changed_relative": min(changed_positions) if changed_positions else None,
+            "last_changed_relative": max(changed_positions) if changed_positions else None,
+            "changed_in_first_0x100": prefix_100_changed,
+            "canonical_0x20000_payload_hypothesis": {
+                "payload_bytes": CANONICAL_PAYLOAD,
+                "prefix_bytes_if_payload_is_tail": prefix_candidate,
+                "changed_in_prefix": prefix_candidate_changed,
+                "changed_in_payload": payload_candidate_changed,
+                "candidate_geometries": CANONICAL_PAYLOAD_GEOMETRIES,
+                "status": "heuristic only; must be validated from inner section header/pixels",
+            },
             "start_alignment": alignment_histogram([s for s, _ in runs], moduli=(8, 16, 32, 64)),
             "relative_mod16_changed_bytes": [
                 sum(1 for pos in changed_positions if pos % 16 == remainder)
@@ -152,6 +184,12 @@ def section_analysis(data: bytes):
 
     return {
         "verified_par_section_starts": list(PAR_SECTION_STARTS),
+        "section_size_observation": {
+            "first_three": [PAR_SECTION_STARTS[i + 1] - PAR_SECTION_STARTS[i] for i in range(3)],
+            "last": len(data) - PAR_SECTION_STARTS[-1],
+            "notable": "0x200F0 = 0x20000 + 0xF0 for first three sections; last is 0x200E0",
+            "interpretation": "strong texture-sized payload hint, not proof of atlas format",
+        },
         "sections": sections,
         "pairwise_same_relative_offset_overlap": pairwise,
         "same_relative_changed_in_all_sections": {
@@ -219,6 +257,7 @@ def main() -> None:
             "metrics key order is NOT treated as physical glyph order",
             "no bitmap-start or fixed-stride assumption is made",
             "PAR section starts are verified from the authenticated retail header, but section semantics remain unproven",
+            "0x20000 payload interpretation is a geometry heuristic only",
             "candidate layout must be validated against recognizable glyph imagery or renderer lookup",
         ],
     }
