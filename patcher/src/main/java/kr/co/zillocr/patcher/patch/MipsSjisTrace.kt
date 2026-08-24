@@ -1,6 +1,6 @@
 package kr.co.zillocr.patcher.patch
 
-/** Targeted read-only disassembly around Shift-JIS decoding and known text-renderer sites. */
+/** Read-only MIPS tracing aimed at the first code-unit -> glyph consumer. */
 object MipsSjisTrace {
     private val regs = arrayOf(
         "zero","at","v0","v1","a0","a1","a2","a3","t0","t1","t2","t3","t4","t5","t6","t7",
@@ -8,84 +8,82 @@ object MipsSjisTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("targeted renderer/glyph trace v3")
+        appendLine("targeted renderer/glyph trace v4")
         appendLine("ELF mapping: virtual address = file offset - 0x80")
-        appendLine("decoder finding carried forward: 0x22655C..0x226600 validates Shift-JIS and preserves lead<<8 | trail; it is not the atlas mapper.")
-        appendLine("new strategy: pivot to upstream-authenticated renderer patch sites, recover their containing functions, direct callers and call targets, and look for the first consumer that turns a decoded code unit into glyph storage/index state.")
+        appendLine("1.8 finding: 0x1564C4 is a real profile renderer path; its most useful next edge is jal 0x146374 (file 0x1463F4).")
+        appendLine("strategy: trace that renderer callee plus nearby helper calls that allocate/copy glyph buckets, looking for lbu/lhu -> arithmetic/table lookup -> per-glyph store.")
 
-        val rendererSites = listOf(
-            "profile glyph-bucket site" to 0x145E88,
-            "profile main renderer stack site" to 0x1564C4,
-            "profile biography renderer-source site" to 0x7165C,
+        val targets = listOf(
+            "renderer callee from profile main path" to 0x1463F4,
+            "text conversion/helper from profile main path" to 0x22010C,
+            "glyph-bucket init/copy helper" to 0x1F9E54,
+            "bucket object helper" to 0x1FA498,
+            "allocator helper" to 0x1DEB80,
         )
-        for ((name, site) in rendererSites) {
+        for ((name, entry) in targets) {
             appendLine()
             appendLine("=== $name ===")
-            appendRendererFunctionTrace(boot, site)
+            appendFunctionTrace(boot, entry)
         }
 
         appendLine()
-        appendLine("=== decoder callers retained for cross-check ===")
-        val decoderEntryFile = 0x2264A8
-        val decoderVa = decoderEntryFile - 0x80
-        val callers = findJalCallers(boot, decoderVa)
-        appendLine("decoder direct jal callers: ${callers.size}")
-        callers.take(8).forEachIndexed { i, off ->
-            appendLine("  #${i + 1} call file=${hex(off)} va=${hex(off - 0x80)}")
-        }
-
-        appendLine()
-        append("Interpretation: the useful renderer candidate is the function whose body loads text/code units (lbu/lhu), then performs arithmetic/table access before storing per-glyph state or issuing a render call. The 0x145E88 site is known upstream to size a renderer glyph bucket; 0x1564C4 is inside the profile renderer's expanded scratch-frame path. No writes are enabled.")
+        appendLine("cross-check anchors:")
+        appendLine("  Shift-JIS decoder file 0x2264A8; code unit preserved as lead<<8 | trail")
+        appendLine("  profile renderer caller site file 0x1565E8 -> jal va 0x146374")
+        appendLine("  physical atlas geometry already established separately: 15x16 slots, 34 columns, 1088 slots/page")
+        append("Interpretation: prioritize a traced function that reads 1/2-byte text, derives a bounded integer, and uses it in pointer arithmetic/table access before a store/copy into renderer state. No writes are enabled.")
     }.trimEnd()
 
-    private fun StringBuilder.appendRendererFunctionTrace(boot: ByteArray, site: Int) {
-        val start = inferFunctionStart(boot, site)
-        val end = inferFunctionEnd(boot, site, start)
-        appendLine("site file=${hex(site)} va=${hex(site - 0x80)}")
+    private fun StringBuilder.appendFunctionTrace(data: ByteArray, entry: Int) {
+        val start = inferFunctionStart(data, entry)
+        val end = inferFunctionEnd(data, entry, start)
+        appendLine("entry file=${hex(entry)} va=${hex(entry - 0x80)}")
         appendLine("inferred function file=${hex(start)}..${hex(end)} va=${hex(start - 0x80)}..${hex(end - 0x80)}")
 
-        val functionVa = start - 0x80
-        val callers = findJalCallers(boot, functionVa)
-        appendLine("direct jal callers of inferred entry: ${callers.size}")
-        callers.take(8).forEachIndexed { i, call ->
-            appendLine("  caller#${i + 1} file=${hex(call)} va=${hex(call - 0x80)}")
-        }
+        val callers = findJalCallers(data, start - 0x80)
+        appendLine("direct callers: ${callers.size}")
+        callers.take(12).forEachIndexed { i, off -> appendLine("  caller#${i + 1} file=${hex(off)} va=${hex(off - 0x80)}") }
 
-        val callTargets = linkedMapOf<Int, MutableList<Int>>()
+        val childCalls = linkedMapOf<Int, MutableList<Int>>()
         var p = start
-        while (p <= end && p + 3 < boot.size) {
-            val w = u32(boot, p)
+        while (p <= end && p + 3 < data.size) {
+            val w = u32(data, p)
             if (((w ushr 26) and 0x3f) == 0x03) {
-                val va = ((p - 0x80 + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
-                callTargets.getOrPut(va) { mutableListOf() } += p
+                val callerVa = p - 0x80
+                val targetVa = ((callerVa + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
+                childCalls.getOrPut(targetVa) { mutableListOf() } += p
             }
             p += 4
         }
-        appendLine("direct call targets inside function: ${callTargets.size}")
-        callTargets.entries.take(16).forEach { (va, calls) ->
-            appendLine("  jal target va=${hex(va)} file≈${hex(va + 0x80)} from ${calls.joinToString { hex(it) }}")
+        appendLine("child jal targets: ${childCalls.size}")
+        childCalls.entries.take(20).forEach { (va, at) ->
+            appendLine("  va=${hex(va)} file≈${hex(va + 0x80)} from ${at.joinToString { hex(it) }}")
         }
 
-        val dumpStart = maxOf(start, site - 0x120)
-        val dumpEnd = minOf(end, site + 0x180)
-        appendLine("focused disassembly around site:")
-        p = dumpStart and -4
-        while (p <= dumpEnd && p + 3 < boot.size) {
-            val w = u32(boot, p)
-            val marker = if (p == site) "  <SITE>" else ""
+        appendLine("function disassembly:")
+        p = start
+        var lines = 0
+        while (p <= end && p + 3 < data.size && lines < 220) {
+            val w = u32(data, p)
+            val marker = if (p == entry) "  <ENTRY>" else ""
             appendLine("  ${hex(p)}  ${w.toUInt().toString(16).uppercase().padStart(8,'0')}  ${decode(w, p)}$marker")
             p += 4
+            lines++
         }
+        if (p <= end) appendLine("  ... truncated ...")
 
-        appendLine("nearby text/glyph-looking memory operations:")
-        val memStart = maxOf(start, site - 0x300)
-        val memEnd = minOf(end, site + 0x300)
+        appendLine("character/index-looking operations:")
+        p = start
         var shown = 0
-        p = memStart and -4
-        while (p <= memEnd && p + 3 < boot.size && shown < 48) {
-            val w = u32(boot, p)
+        while (p <= end && p + 3 < data.size && shown < 100) {
+            val w = u32(data, p)
             val op = (w ushr 26) and 0x3f
-            if (op in setOf(0x20,0x24,0x21,0x25,0x28,0x29,0x2b)) {
+            val fn = w and 0x3f
+            val imm = w and 0xffff
+            val interesting = op in setOf(0x20,0x21,0x24,0x25,0x28,0x29,0x2b,0x0a,0x0b,0x0c,0x0d) ||
+                (op == 0 && fn in setOf(0x00,0x02,0x04,0x06,0x21,0x23,0x24,0x25,0x2b)) ||
+                imm in setOf(0x000f,0x0010,0x001f,0x0020,0x003f,0x0040,0x007f,0x0080,0x00ff,0x0100,0x0200,0x0400,0x0800,0x0c00)
+            if (interesting) {
                 appendLine("  ${hex(p)}  ${decode(w, p)}")
                 shown++
             }
@@ -95,7 +93,7 @@ object MipsSjisTrace {
 
     private fun inferFunctionStart(data: ByteArray, site: Int): Int {
         var p = site and -4
-        val floor = maxOf(0, p - 0x900)
+        val floor = maxOf(0, p - 0x600)
         while (p >= floor) {
             val w = u32(data, p)
             val op = (w ushr 26) and 0x3f
@@ -105,17 +103,17 @@ object MipsSjisTrace {
             if (op == 0x09 && rs == 29 && rt == 29 && imm < 0) return p
             p -= 4
         }
-        return maxOf(0, (site - 0x180) and -4)
+        return site and -4
     }
 
     private fun inferFunctionEnd(data: ByteArray, site: Int, start: Int): Int {
         var p = maxOf(site, start) and -4
-        val ceiling = minOf(data.size - 8, p + 0x1200)
+        val ceiling = minOf(data.size - 8, start + 0x1000)
         while (p <= ceiling) {
             if (u32(data, p) == 0x03E00008) return minOf(data.size - 4, p + 4)
             p += 4
         }
-        return minOf(data.size - 4, site + 0x240)
+        return minOf(data.size - 4, start + 0x500)
     }
 
     private fun findJalCallers(data: ByteArray, targetVa: Int): List<Int> {
@@ -156,15 +154,15 @@ object MipsSjisTrace {
                 0x06 -> "srlv ${r(rd)}, ${r(rt)}, ${r(rs)}"
                 0x08 -> "jr ${r(rs)}"
                 0x09 -> "jalr ${r(rd)}, ${r(rs)}"
-                0x20, 0x21 -> "addu ${r(rd)}, ${r(rs)}, ${r(rt)}"
-                0x22, 0x23 -> "subu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                0x20,0x21 -> "addu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                0x22,0x23 -> "subu ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x24 -> "and ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x25 -> "or ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x2a -> "slt ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 0x2b -> "sltu ${r(rd)}, ${r(rs)}, ${r(rt)}"
                 else -> "SPECIAL fn=0x${fn.toString(16)}"
             }
-            0x02, 0x03 -> {
+            0x02,0x03 -> {
                 val callerVa = fileOff - 0x80
                 val targetVa = ((callerVa + 4) and 0xF0000000.toInt()) or ((w and 0x03ffffff) shl 2)
                 (if (op == 0x03) "jal" else "j") + " va=${hex(targetVa)} file≈${hex(targetVa + 0x80)}"
@@ -173,7 +171,7 @@ object MipsSjisTrace {
             0x05 -> "bne ${r(rs)}, ${r(rt)}, ${bt()}"
             0x06 -> "blez ${r(rs)}, ${bt()}"
             0x07 -> "bgtz ${r(rs)}, ${bt()}"
-            0x08, 0x09 -> "addiu ${r(rt)}, ${r(rs)}, $simm"
+            0x08,0x09 -> "addiu ${r(rt)}, ${r(rs)}, $simm"
             0x0a -> "slti ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
             0x0b -> "sltiu ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
             0x0c -> "andi ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
@@ -193,7 +191,6 @@ object MipsSjisTrace {
     }
 
     private fun hex(v: Int): String = "0x${v.toUInt().toString(16).uppercase()}"
-
     private fun u32(data: ByteArray, o: Int): Int =
         (data[o].toInt() and 0xff) or
             ((data[o + 1].toInt() and 0xff) shl 8) or
