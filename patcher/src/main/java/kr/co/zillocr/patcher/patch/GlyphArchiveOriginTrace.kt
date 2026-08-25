@@ -8,7 +8,7 @@ object GlyphArchiveOriginTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("glyph metadata archive-origin trace v1")
+        appendLine("glyph metadata archive-origin trace v2")
         appendLine("2.9 result carried forward: file 0x1459BC is the only direct caller of metadata parser 0x1FA800. Its a2 comes from helper 0x1DDDE4; sibling helpers 0x1DDD9C and 0x1DDE1C are used in the same setup path.")
         appendLine("goal: classify those three helpers, enumerate their direct callers, and expose the exact 0x1458D8 setup function around every call so a file/member/resource identifier can be recovered.")
         appendLine("No writes are enabled.")
@@ -25,16 +25,15 @@ object GlyphArchiveOriginTrace {
         for (t in targets) {
             appendLine("=== ${t.name} ===")
             appendLine("entry va=${hex(t.va)} file=${hex(t.file)}")
-            val fs = inferFunctionStart(boot, t.file) ?: t.file
-            val fe = inferFunctionExtent(boot, fs)
-            appendLine("inferred function ${hex(fs)}..${hex(fe)}")
-            dump(boot, fs, fe, setOf(t.file))
+            val backwardPrologue = inferFunctionStart(boot, t.file)
+            val fe = inferFunctionExtent(boot, t.file)
+            appendLine("backward prologue candidate=${backwardPrologue?.let(::hex) ?: "none"}")
+            appendLine("exact entry extent ${hex(t.file)}..${hex(fe)}")
+            dump(boot, t.file, fe, setOf(t.file))
             val callers = findJalCallers(boot, t.va)
             appendLine("direct callers=${callers.size}")
-            callers.take(32).forEachIndexed { i, c ->
-                appendLine("  #${i + 1} call file=${hex(c)} va=${hex(c - 0x80)}")
-                dump(boot, maxOf(0, c - 0x70), minOf(boot.size - 4, c + 0x70), setOf(c))
-            }
+            appendLine("caller files=" + callers.take(64).joinToString(" ") { hex(it) })
+            if (callers.size > 64) appendLine("  ... ${callers.size - 64} more")
             appendLine()
         }
 
