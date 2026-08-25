@@ -131,10 +131,10 @@ object GlyphArchiveOriginTrace {
         val records: List<PaaRecord>,
     )
 
-    /** PoC 4.0: validate the PAF binary-search tree, Unicode coverage, and four-page GIM atlas geometry. */
+    /** PoC 4.1: resolve the PAF GIM page selector by tail-field distributions and atlas collision scoring. */
     fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
-        appendLine("glyph PAF BST/atlas validator v11")
-        appendLine("PoC 4.0 · read-only · ISO/BOOT writes disabled")
+        appendLine("glyph PAF page-field/collision resolver v12")
+        appendLine("PoC 4.1 · read-only · ISO/BOOT writes disabled")
         appendLine("Proven layout: PAA header 0x20, records 0x10, align16 ARC packing; ARC member may carry a 0x10-byte prefix before PAR.")
         appendLine()
 
@@ -269,7 +269,7 @@ object GlyphArchiveOriginTrace {
         appendLine("=== decision rule ===")
         appendLine("Reverse record plus align16 total proves ID→record→ARC-member mapping; PAR magic at member+0x10 proves the wrapper boundary.")
         appendLine("The wrapped PAR base is forced into the recovered parser so sub-block[2] and 0/A/a descriptor hypotheses are dumped without false-header selection.")
-        appendLine("For owner+0x384, zillfont.paf supplies a sorted glyph array, root index, child links, and four-page atlas coordinates; this run validates all four together.")
+        appendLine("For owner+0x384, zillfont.paf supplies 0x18/0x1C tail fields; value distributions and per-page rectangle collisions decide which field selects the four GIM pages.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
 
@@ -885,6 +885,25 @@ object GlyphArchiveOriginTrace {
         appendLine("  min=${if (coreCount == 0) "none" else u(cp.minOrNull()!!)} max=${if (coreCount == 0) "none" else u(cp.maxOrNull()!!)} zeroSized=${(0 until coreCount).count { w[it] == 0 || h[it] == 0 }}")
         for ((label, range) in ranges) appendLine("  $label: ${(0 until coreCount).count { cp[it] in range }}")
         appendLine("  Hangul probes: U+1100=${cp.count { it == 0x1100 }} U+3131=${cp.count { it == 0x3131 }} U+AC00=${cp.count { it == 0xAC00 }} U+D7A3=${cp.count { it == 0xD7A3 }}")
+        val hangul = (0 until coreCount).filter { cp[it] in 0xAC00..0xD7A3 }
+        var hangulRuns = 0
+        var longestHangulRun = 0
+        var currentHangulRun = 0
+        var previousHangul = -2
+        for (i in hangul) {
+            if (cp[i] != previousHangul + 1) {
+                hangulRuns++
+                currentHangulRun = 1
+            } else {
+                currentHangulRun++
+            }
+            longestHangulRun = maxOf(longestHangulRun, currentHangulRun)
+            previousHangul = cp[i]
+        }
+        appendLine("Hangul coverage samples:")
+        appendLine("  count=${hangul.size} contiguousRuns=$hangulRuns longestRun=$longestHangulRun")
+        appendLine("  first=${hangul.take(24).joinToString { u(cp[it]) }}")
+        appendLine("  last=${hangul.takeLast(12).joinToString { u(cp[it]) }}")
 
         val pages = pageCount.coerceAtLeast(1)
         val verticalCounts = IntArray(pages)
@@ -918,16 +937,107 @@ object GlyphArchiveOriginTrace {
                 horizontalRight[hp] = maxOf(horizontalRight[hp], localX + w[i])
             }
         }
-        var reservedNonZero = 0
+        val tail18 = LongArray(fullCount)
+        val tail1C = LongArray(fullCount)
         for (i in 0 until fullCount) {
             val at = recordBase + i * stride
-            if (readU32(data, at + 0x18, true) != 0L || readU32(data, at + 0x1C, true) != 0L) reservedNonZero++
+            tail18[i] = readU32(data, at + 0x18, true)
+            tail1C[i] = readU32(data, at + 0x1C, true)
         }
+        fun distribution(values: LongArray): String {
+            val counts = linkedMapOf<Long, Int>()
+            values.forEach { value -> counts[value] = (counts[value] ?: 0) + 1 }
+            val top = counts.entries
+                .sortedWith(compareByDescending<Map.Entry<Long, Int>> { it.value }.thenBy { it.key })
+                .take(16)
+                .joinToString { "${hex(it.key)}:${it.value}" }
+            return "distinct=${counts.size} min=${values.minOrNull()?.let { hex(it) } ?: "none"} max=${values.maxOrNull()?.let { hex(it) } ?: "none"} top=[$top]"
+        }
+        appendLine("PAF tail-field distributions:")
+        appendLine("  +0x18 u32: ${distribution(tail18)}")
+        appendLine("  +0x1C u32: ${distribution(tail1C)}")
+        appendLine("  +0x18 low8: ${distribution(LongArray(fullCount) { tail18[it] and 0xFFL })}")
+        appendLine("  +0x1C low8: ${distribution(LongArray(fullCount) { tail1C[it] and 0xFFL })}")
+        appendLine("  nonZeroEither=${(0 until fullCount).count { tail18[it] != 0L || tail1C[it] != 0L }}/$fullCount")
+
         appendLine("atlas geometry hypotheses (512x512 x $pageCount GIM pages):")
-        appendLine("  glyphs=$glyphs maxExclusive=(${hex(maxX)},${hex(maxY)}) reservedNonZero=$reservedNonZero")
+        appendLine("  glyphs=$glyphs maxExclusive=(${hex(maxX)},${hex(maxY)}) tailRecords=$fullCount")
         appendLine("  vertical global-Y: errors=$verticalErrors counts=${verticalCounts.joinToString()} localBottom=${verticalBottom.joinToString()}")
         appendLine("  horizontal global-X: errors=$horizontalErrors counts=${horizontalCounts.joinToString()} localRight=${horizontalRight.joinToString()}")
-        appendLine("  preferred=${when { verticalErrors < horizontalErrors -> "vertical global-Y"; horizontalErrors < verticalErrors -> "horizontal global-X"; else -> "undecided" }}")
+        appendLine("  coordinatePacking=${when { verticalErrors < horizontalErrors -> "vertical global-Y"; horizontalErrors < verticalErrors -> "horizontal global-X"; else -> "local 512 coordinates / undecided" }}")
+
+        fun collisionScore(label: String, pageOf: (Int) -> Int) {
+            val occupancy = BooleanArray(pages * 0x200 * 0x200)
+            val pageGlyphs = IntArray(pages)
+            val pagePixels = IntArray(pages)
+            var invalidRecords = 0
+            var overlapPixels = 0L
+            var overlapGlyphs = 0
+            for (i in 0 until fullCount) {
+                if (w[i] == 0 || h[i] == 0) continue
+                val page = pageOf(i)
+                if (page !in 0 until pages || x[i] + w[i] > 0x200 || y[i] + h[i] > 0x200) {
+                    invalidRecords++
+                    continue
+                }
+                pageGlyphs[page]++
+                var glyphOverlaps = false
+                for (py in y[i] until y[i] + h[i]) {
+                    var cell = page * 0x40000 + py * 0x200 + x[i]
+                    for (px in 0 until w[i]) {
+                        if (occupancy[cell]) {
+                            overlapPixels++
+                            glyphOverlaps = true
+                        } else {
+                            occupancy[cell] = true
+                            pagePixels[page]++
+                        }
+                        cell++
+                    }
+                }
+                if (glyphOverlaps) overlapGlyphs++
+            }
+            appendLine("  $label: invalid=$invalidRecords overlapGlyphs=$overlapGlyphs overlapPixels=$overlapPixels glyphs=[${pageGlyphs.joinToString()}] usedPixels=[${pagePixels.joinToString()}]")
+        }
+        appendLine("page collision scores:")
+        collisionScore("all page 0") { 0 }
+        collisionScore("+0x18 u32") { tail18[it].toInt() }
+        collisionScore("+0x1C u32") { tail1C[it].toInt() }
+        collisionScore("+0x18 low16") { (tail18[it] and 0xFFFFL).toInt() }
+        collisionScore("+0x1C low16") { (tail1C[it] and 0xFFFFL).toInt() }
+        collisionScore("+0x18 low8") { (tail18[it] and 0xFFL).toInt() }
+        collisionScore("+0x1C low8") { (tail1C[it] and 0xFFL).toInt() }
+        collisionScore("+0x18 bits0..1") { (tail18[it] and 3L).toInt() }
+        collisionScore("+0x1C bits0..1") { (tail1C[it] and 3L).toInt() }
+        collisionScore("+0x18 bits8..9") { ((tail18[it] ushr 8) and 3L).toInt() }
+        collisionScore("+0x1C bits8..9") { ((tail1C[it] ushr 8) and 3L).toInt() }
+        collisionScore("+0x18 bits16..17") { ((tail18[it] ushr 16) and 3L).toInt() }
+        collisionScore("+0x1C bits16..17") { ((tail1C[it] ushr 16) and 3L).toInt() }
+        collisionScore("+0x18 bits24..25") { ((tail18[it] ushr 24) and 3L).toInt() }
+        collisionScore("+0x1C bits24..25") { ((tail1C[it] ushr 24) and 3L).toInt() }
+
+        val representative = linkedSetOf<Int>()
+        listOf(0x09, 0x30, 0x41, 0x61).forEach { target -> cp.indexOf(target).takeIf { it >= 0 }?.let { representative += it } }
+        if (rootIndex in 0 until fullCount) representative += rootIndex
+        (0 until fullCount).firstOrNull { cp[it] in 0x4E00..0x9FFF }?.let { representative += it }
+        (0 until fullCount).firstOrNull { cp[it] in 0xAC00..0xD7A3 }?.let { representative += it }
+        (0 until fullCount).lastOrNull { cp[it] in 0xAC00..0xD7A3 }?.let { representative += it }
+        if (fullCount > 0) representative += fullCount - 1
+        appendLine("representative page-field records:")
+        representative.forEach { i ->
+            appendLine("  #$i ${u(cp[i])} rect=${x[i]},${y[i]} ${w[i]}x${h[i]} +18=${hex(tail18[i])} +1C=${hex(tail1C[i])}")
+        }
+        val transitions = mutableListOf<Int>()
+        for (i in 1 until fullCount) {
+            if (tail18[i] != tail18[i - 1] || tail1C[i] != tail1C[i - 1]) {
+                transitions += i
+                if (transitions.size >= 24) break
+            }
+        }
+        appendLine("first tail-field transitions:")
+        transitions.forEach { i ->
+            appendLine("  #${i - 1} ${u(cp[i - 1])} (${hex(tail18[i - 1])},${hex(tail1C[i - 1])}) -> #$i ${u(cp[i])} (${hex(tail18[i])},${hex(tail1C[i])})")
+        }
 
         val missing = (0x20..0x7E).filter { target -> cp.none { it == target } }
         appendLine("dense sorted-array proof:")
