@@ -8,37 +8,48 @@ object GlyphArchiveOriginTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("glyph metadata container-writer trace v3")
-        appendLine("3.1 decisive result: helper B bounds-checks index against container+0x14, then returns *(container+0x00) + *(u32*)(*(container+0x04) + index*4). Therefore index=2 is the third offset-table sub-block in the container built from s0+0x384.")
-        appendLine("helper C independently returns *(container+0x08) + index*0x20, confirming a parallel 0x20-byte entry-descriptor table.")
-        appendLine("goal: recover the container header parser and every direct BOOT access that writes or reads owner+0x380/+0x384. No writes are enabled.")
+        appendLine("glyph resource-id / loader trace v4")
+        appendLine("PoC 3.3 · read-only · BOOT writes disabled")
+        appendLine("decisive writer: owner initializer calls loader VA 0x1CE528 with output slots owner+0x380 and owner+0x384.")
+        appendLine("resource identifiers: +0x380 <- VA 0x252550; +0x384 <- VA 0x252564.")
         appendLine()
 
-        appendLine("=== raw container parser core va=0x1DDBA0 / file=0x1DDC20 ===")
-        appendLine("Fixed range ends immediately before wrapper helper A at file 0x1DDE1C.")
-        dump(boot, 0x1DDC20, 0x1DDE18, setOf(0x1DDC20))
+        appendLine("=== recovered container header parser ===")
+        appendLine("parser VA 0x1DDBA0 / file 0x1DDC20")
+        appendLine("container+0x00=raw base; +0x04=raw+0x10 offset table; +0x08=aligned 0x20-byte descriptor table; +0x14=count(raw+8); +0x1C=type/version(raw+4).")
+        appendLine("helper B(index) => rawBase + offsetTable[index], guarded by index < count. index=2 is the third sub-block.")
+        dump(boot, 0x1DDC20, 0x1DDE18, setOf(0x1DDC20, 0x1DDCA4, 0x1DDCC0, 0x1DDCC8))
         appendLine()
 
-        appendLine("=== owner initializer va=0x145784 / file=0x145804 ===")
-        appendLine("This runs on the state-0 path before setup 0x145858 runs on the state-1 path.")
-        dump(boot, 0x145804, 0x1458D4, setOf(0x145804))
+        appendLine("=== exact owner writer bridge ===")
+        appendLine("owner+0x380: loader(0x1CE528, id VA 0x252550, out owner+0x380)")
+        appendLine("owner+0x384: loader(0x1CE528, id VA 0x252564, out owner+0x384)")
+        dump(boot, 0x145828, 0x14588C, setOf(0x145840, 0x145858, 0x145868, 0x145884))
         appendLine()
 
-        appendLine("=== all direct owner field accesses at +0x380/+0x384 ===")
-        scanOwnerResourceFields(boot)
+        appendLine("=== static resource identifiers ===")
+        probeStaticVa(boot, "owner+0x380 resource id", 0x252550)
+        appendLine()
+        probeStaticVa(boot, "owner+0x384 glyph resource id", 0x252564)
         appendLine()
 
-        appendLine("=== global font-owner address materialization (VA 0x9280) ===")
-        scanGlobalOwnerMaterialization(boot)
+        appendLine("=== resource loader VA 0x1CE528 / file 0x1CE5A8 ===")
+        appendLine("The fourth call argument is the owner field address; trace stores/callbacks that reach it.")
+        dump(boot, 0x1CE5A8, 0x1CE8F8, setOf(0x1CE5A8))
         appendLine()
 
-        appendLine("=== callers of owner initializer va=0x145784 ===")
-        appendLine(findJalCallers(boot, 0x145784).joinToString(" ") { "file=${hex(it)}" })
-        appendLine("=== callers of resource-load kickoff va=0x1CFE60 ===")
-        appendLine(findJalCallers(boot, 0x1CFE60).joinToString(" ") { "file=${hex(it)}" })
+        appendLine("=== resource factory VA 0x1CDE2C / file 0x1CDEAC ===")
+        dump(boot, 0x1CDEAC, 0x1CE120, setOf(0x1CDEAC))
         appendLine()
 
-        appendLine("Decision rule: identify the exact store into owner+0x384 and its source pointer/resource ID. Then parse that source container directly and extract sub-block index 2 for glyph descriptor validation against 0/A/a.")
+        appendLine("=== narrow caller confirmation ===")
+        appendLine("owner initializer VA 0x145784 callers: " +
+            findJalCallers(boot, 0x145784).joinToString(" ") { "file=${hex(it)}" })
+        appendLine("loader VA 0x1CE528 callers: " +
+            findJalCallers(boot, 0x1CE528).joinToString(" ") { "file=${hex(it)}" })
+        appendLine()
+
+        appendLine("Decision rule: resolve VA 0x252564 through the loader to its ISO/PAA source, parse that raw container with the recovered header, then extract offsetTable[2] and validate glyph descriptors for 0/A/a. No patch writes are enabled.")
     }.trimEnd()
 
     private fun StringBuilder.scanOwnerResourceFields(data: ByteArray) {
@@ -167,6 +178,47 @@ object GlyphArchiveOriginTrace {
             }
             p += 4
         }
+    }
+
+    private fun StringBuilder.probeStaticVa(data: ByteArray, label: String, va: Int) {
+        val file = va + 0x80
+        appendLine("$label va=${hex(va)} file=${hex(file)}")
+        if (file !in data.indices) {
+            appendLine("  outside BOOT")
+            return
+        }
+        val end = minOf(data.size, file + 0x80)
+        var p = file
+        while (p < end) {
+            val rowEnd = minOf(end, p + 16)
+            val bytes = (p until rowEnd).joinToString(" ") {
+                (data[it].toInt() and 0xff).toString(16).uppercase().padStart(2, '0')
+            }.padEnd(47, ' ')
+            val ascii = buildString {
+                for (i in p until rowEnd) {
+                    val c = data[i].toInt() and 0xff
+                    append(if (c in 0x20..0x7e) c.toChar() else '.')
+                }
+            }
+            appendLine("  ${hex(p)}  $bytes  $ascii")
+            p += 16
+        }
+        printableStringAt(data, file)?.let { appendLine("  direct ASCII: '$it'") }
+        appendLine("  BOOT VA pointer candidates:")
+        var any = false
+        p = file
+        val pointerEnd = minOf(end, file + 0x60)
+        while (p + 4 <= pointerEnd) {
+            val targetVa = u32(data, p)
+            val targetFile = targetVa + 0x80
+            if (targetVa in 0x1000..0x03ffffff && targetFile in data.indices) {
+                any = true
+                val text = printableStringAt(data, targetFile)?.let { " ASCII='$it'" } ?: ""
+                appendLine("    +${hex(p - file)} => va=${hex(targetVa)} file=${hex(targetFile)}$text")
+            }
+            p += 4
+        }
+        if (!any) appendLine("    none in first 0x60 bytes")
     }
 
     private fun printableStringAt(data: ByteArray, offset: Int): String? {
