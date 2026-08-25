@@ -1,6 +1,6 @@
 package kr.co.zillocr.patcher.patch
 
-/** PoC 3.4 read-only probe for the two PAR resources recovered from BOOT. */
+/** Read-only probes for the virtual font resources and recovered PAR container format. */
 object GlyphArchiveOriginTrace {
     private data class Header(
         val base: Int,
@@ -34,6 +34,178 @@ object GlyphArchiveOriginTrace {
         appendLine("If neither file has a parser-compatible header at base 0, use the best embedded candidate listed below and trace the outer PAR archive entry once more.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
+
+
+    /**
+     * Fallback used when BOOT resource IDs are not ISO9660 paths.  It emits the
+     * inner virtual-resource lookup and the physical ISO archive/index inventory.
+     */
+    fun virtualResourceReport(
+        boot: ByteArray,
+        directZillFound: Boolean,
+        directJillFound: Boolean,
+        isoFiles: List<Iso9660Reader.LocatedEntry>,
+    ): String = buildString {
+        appendLine("glyph virtual-resource loader trace v6")
+        appendLine("PoC 3.5 · read-only · ISO/BOOT writes disabled")
+        appendLine()
+        appendLine("=== corrected interpretation ===")
+        appendLine("font/zillfont.par: direct ISO entry = ${if (directZillFound) "present" else "absent"}")
+        appendLine("2d/font/jillbtn.par: direct ISO entry = ${if (directJillFound) "present" else "absent"}")
+        appendLine("These strings are virtual resource IDs passed to the resource manager, not guaranteed ISO9660 paths.")
+        appendLine("owner+0x380 and owner+0x384 writer tracing remains valid; only the previous physical-path assumption was wrong.")
+        appendLine()
+        appendLine("=== inner virtual-resource loader ===")
+        appendLine("wrapper VA 0x1CE528 delegates to VA 0x1D0E50 while preserving resource ID and owner output slot.")
+        appendLine("inner loader VA=0x1D0E50 / BOOT file=0x1D0ED0")
+        appendLine("fixed range ends immediately before next wrapper VA=0x1D1058 / file=0x1D10D8.")
+        dumpMips(boot, 0x1D0ED0, 0x1D10D8)
+        appendLine()
+        appendLine("direct JAL targets in inner loader:")
+        val targets = jalTargets(boot, 0x1D0ED0, 0x1D10D8)
+        if (targets.isEmpty()) appendLine("  none")
+        else targets.forEach { target ->
+            appendLine("  VA=${hex(target)} file≈${hex(target + 0x80)}")
+        }
+        appendLine()
+        appendLine("=== ISO physical inventory ===")
+        appendLine("regular files: ${isoFiles.size}")
+        val extensionRows = isoFiles.groupBy { row ->
+            row.path.substringAfterLast('.', "").lowercase().ifEmpty { "<none>" }
+        }.map { (ext, rows) ->
+            var bytes = 0L
+            rows.forEach { bytes += it.entry.size }
+            Triple(ext, rows.size, bytes)
+        }.sortedWith(compareByDescending<Triple<String, Int, Long>> { it.third }.thenByDescending { it.second })
+        appendLine("extensions by total bytes (top 30):")
+        extensionRows.take(30).forEach { (ext, count, bytes) ->
+            appendLine("  ${ext.padEnd(8)} count=${count.toString().padStart(4)} bytes=$bytes")
+        }
+        appendLine()
+        appendLine("largest physical files (top 50):")
+        isoFiles.sortedByDescending { it.entry.size }.take(50).forEach { row ->
+            appendLine("  size=${row.entry.size.toString().padStart(10)} LBA=${row.entry.extentLba.toString().padStart(8)}  ${row.path}")
+        }
+        appendLine()
+        val archiveWords = listOf("archive", "pack", "resource", "data", "font", "text", "index", "filelist")
+        val archiveExt = setOf("bin", "dat", "arc", "pak", "pac", "pck", "cpk", "wad", "idx", "hed", "lst", "par")
+        val likely = isoFiles.filter { row ->
+            val lower = row.path.lowercase()
+            val ext = lower.substringAfterLast('.', "")
+            ext in archiveExt || archiveWords.any { it in lower }
+        }.sortedWith(compareByDescending<Iso9660Reader.LocatedEntry> { it.entry.size }.thenBy { it.path })
+        appendLine("named archive/index/resource candidates (top 100):")
+        if (likely.isEmpty()) appendLine("  none")
+        else likely.take(100).forEach { row ->
+            appendLine("  size=${row.entry.size.toString().padStart(10)} LBA=${row.entry.extentLba.toString().padStart(8)}  ${row.path}")
+        }
+        appendLine()
+        appendLine("=== next decision rule ===")
+        appendLine("Use the JAL targets above to recover hash/path lookup, then map virtual ID 0x252564 to one physical file/LBA.")
+        appendLine("Only after that mapping is proven should the recovered container parser extract offsetTable[2] and validate 0/A/a.")
+        appendLine("No patch writes were performed.")
+    }.trimEnd()
+
+    private val mipsRegisters = arrayOf(
+        "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+        "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+        "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+        "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
+    )
+
+    private fun StringBuilder.dumpMips(data: ByteArray, start: Int, end: Int) {
+        if (start < 0 || start >= data.size) {
+            appendLine("  <BOOT range unavailable: size=${hex(data.size)}>")
+            return
+        }
+        val safeEnd = minOf(end, data.size)
+        var file = start
+        while (file + 4 <= safeEnd) {
+            val word = readU32(data, file, true).toInt()
+            val va = file - 0x80
+            appendLine("  ${hex(file)}  ${word.toUInt().toString(16).uppercase().padStart(8, '0')}  ${decodeMips(word, va)}")
+            file += 4
+        }
+        if (safeEnd < end) appendLine("  <truncated at BOOT EOF>")
+    }
+
+    private fun jalTargets(data: ByteArray, start: Int, end: Int): List<Int> {
+        val result = linkedSetOf<Int>()
+        var file = start.coerceAtLeast(0)
+        val safeEnd = minOf(end, data.size)
+        while (file + 4 <= safeEnd) {
+            val word = readU32(data, file, true).toInt()
+            if ((word ushr 26) == 3) {
+                val va = file - 0x80
+                result += (((va + 4) and 0xF0000000.toInt()) or ((word and 0x03FFFFFF) shl 2))
+            }
+            file += 4
+        }
+        return result.toList()
+    }
+
+    private fun decodeMips(word: Int, va: Int): String {
+        val op = word ushr 26
+        val rs = (word ushr 21) and 31
+        val rt = (word ushr 16) and 31
+        val rd = (word ushr 11) and 31
+        val sa = (word ushr 6) and 31
+        val fn = word and 63
+        val imm = word and 0xffff
+        val simm = imm.toShort().toInt()
+        fun r(i: Int) = mipsRegisters[i]
+        fun branchTarget() = va + 4 + (simm shl 2)
+        return when (op) {
+            0 -> when (fn) {
+                0 -> if (word == 0) "nop" else "sll ${r(rd)}, ${r(rt)}, $sa"
+                2 -> "srl ${r(rd)}, ${r(rt)}, $sa"
+                3 -> "sra ${r(rd)}, ${r(rt)}, $sa"
+                8 -> "jr ${r(rs)}"
+                9 -> "jalr ${r(rd)}, ${r(rs)}"
+                16 -> "mfhi ${r(rd)}"
+                18 -> "mflo ${r(rd)}"
+                24 -> "mult ${r(rs)}, ${r(rt)}"
+                26 -> "div ${r(rs)}, ${r(rt)}"
+                33 -> "addu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                35 -> "subu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                36 -> "and ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                37 -> "or ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                38 -> "xor ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                42 -> "slt ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                43 -> "sltu ${r(rd)}, ${r(rs)}, ${r(rt)}"
+                else -> "SPECIAL fn=0x${fn.toString(16).uppercase()}"
+            }
+            1 -> when (rt) {
+                0 -> "bltz ${r(rs)}, ${hex(branchTarget())}"
+                1 -> "bgez ${r(rs)}, ${hex(branchTarget())}"
+                else -> "REGIMM rt=$rt target=${hex(branchTarget())}"
+            }
+            2, 3 -> {
+                val target = (((va + 4) and 0xF0000000.toInt()) or ((word and 0x03FFFFFF) shl 2))
+                "${if (op == 3) "jal" else "j"} VA=${hex(target)} file≈${hex(target + 0x80)}"
+            }
+            4 -> "beq ${r(rs)}, ${r(rt)}, ${hex(branchTarget())}"
+            5 -> "bne ${r(rs)}, ${r(rt)}, ${hex(branchTarget())}"
+            6 -> "blez ${r(rs)}, ${hex(branchTarget())}"
+            7 -> "bgtz ${r(rs)}, ${hex(branchTarget())}"
+            9 -> "addiu ${r(rt)}, ${r(rs)}, $simm"
+            10 -> "slti ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
+            11 -> "sltiu ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
+            12 -> "andi ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
+            13 -> "ori ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
+            14 -> "xori ${r(rt)}, ${r(rs)}, 0x${imm.toString(16).uppercase()}"
+            15 -> "lui ${r(rt)}, 0x${imm.toString(16).uppercase()}"
+            32 -> "lb ${r(rt)}, $simm(${r(rs)})"
+            33 -> "lh ${r(rt)}, $simm(${r(rs)})"
+            35 -> "lw ${r(rt)}, $simm(${r(rs)})"
+            36 -> "lbu ${r(rt)}, $simm(${r(rs)})"
+            37 -> "lhu ${r(rt)}, $simm(${r(rs)})"
+            40 -> "sb ${r(rt)}, $simm(${r(rs)})"
+            41 -> "sh ${r(rt)}, $simm(${r(rs)})"
+            43 -> "sw ${r(rt)}, $simm(${r(rs)})"
+            else -> "op=0x${op.toString(16).uppercase()} rs=${r(rs)} rt=${r(rt)} imm=0x${imm.toString(16).uppercase()}"
+        }
+    }
 
     private fun StringBuilder.analyze(label: String, path: String, data: ByteArray) {
         appendLine("=== $label ===")
