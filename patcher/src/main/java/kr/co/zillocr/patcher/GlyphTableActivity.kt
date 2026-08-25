@@ -17,7 +17,7 @@ import kr.co.zillocr.patcher.patch.Iso9660Reader
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 3.8: unwrap the 0x10 ARC prefix and parse the exact embedded PAR payload. */
+/** PoC 3.9: decode exact 0/A/a records from the embedded PAF glyph table. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -29,7 +29,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "ARC 멤버의 0x10바이트 래퍼를 벗기고 PAR sub-block[2]를 분석 중…"
+        statusView.text = "zillfont.paf의 0x20바이트 글리프 레코드와 0/A/a를 해석 중…"
         executor.execute {
             val report = try {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -121,14 +121,14 @@ class GlyphTableActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "PoC 3.8 · 래핑 PAR/sub-block[2] 해석\n" +
-                "align16 ARC 멤버 위치와 멤버 앞 0x10바이트 래퍼를 확인했습니다. " +
-                "이번 판은 실제 PAR 헤더를 member+0x10으로 고정하고, jillbtn.par의 세 번째 sub-block인 zillfont.paf와 0/A/a 디스크립터 후보를 직접 덤프합니다. 쓰기는 비활성입니다."
+            text = "PoC 3.9 · PAF 글리프 레코드 해석\n" +
+                "zillfont.paf의 글리프 테이블이 PAF+0x30에서 시작하고 레코드 간격이 0x20바이트임을 확인했습니다. " +
+                "이번 판은 U+0030, U+0041, U+0061 레코드를 코드포인트로 직접 찾아 폭·높이·아틀라스 좌표·베어링·advance 후보와 전후 문자를 비교합니다. 쓰기는 비활성입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · zillfont.paf 분석"
+            text = "원본 ISO 선택 · 0/A/a 레코드 검증"
             setOnClickListener {
                 isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*"))
             }
@@ -140,7 +140,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                        ClipData.newPlainText("zill wrapped PAR resolver v9", latestReport)
+                        ClipData.newPlainText("zill PAF glyph resolver v10", latestReport)
                     )
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
