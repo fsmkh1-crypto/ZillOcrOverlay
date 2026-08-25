@@ -106,6 +106,218 @@ object GlyphArchiveOriginTrace {
         appendLine("No patch writes were performed.")
     }.trimEnd()
 
+
+    data class ArchivePair(
+        val indexPath: String,
+        val index: ByteArray,
+        val arcPath: String,
+        val arcSize: Long,
+        val readArc: (Long, Int) -> ByteArray,
+    )
+
+    /** PoC 3.6: correlate virtual IDs with the small BIN indexes and validate ARC offsets. */
+    fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
+        appendLine("glyph archive-index correlator v7")
+        appendLine("PoC 3.6 · read-only · ISO/BOOT writes disabled")
+        appendLine("Physical layout confirmed: small .bin index paired with large .arc payload.")
+        appendLine()
+        val resources = listOf("font/zillfont.par", "2d/font/jillbtn.par")
+        pairs.forEach { pair ->
+            appendLine("=== ${pair.indexPath} -> ${pair.arcPath} ===")
+            appendLine("index size=${pair.index.size} arc size=${pair.arcSize}")
+            appendLine("index head:")
+            dump(pair.index, 0, minOf(pair.index.size, 0x100))
+            val fontStrings = filteredAsciiStrings(pair.index, 240) { text ->
+                val lower = text.lowercase()
+                "font" in lower || ".par" in lower || "zill" in lower || "jill" in lower
+            }
+            appendLine("font/PAR-related strings:")
+            if (fontStrings.isEmpty()) appendLine("  none")
+            else fontStrings.forEach { (offset, text) -> appendLine("  ${hex(offset)}  '$text'") }
+            appendLine()
+
+            resources.forEach { resource ->
+                appendLine("--- virtual ID: $resource ---")
+                val exactHits = findBytes(pair.index, resource.toByteArray(Charsets.US_ASCII))
+                val lowerHits = findBytes(pair.index, resource.lowercase().toByteArray(Charsets.US_ASCII))
+                val stringHits = (exactHits + lowerHits).distinct().sorted()
+                appendLine("exact ASCII hits: ${formatHits(stringHits)}")
+                stringHits.take(12).forEach { hit ->
+                    appendLine("context @ ${hex(hit)}:")
+                    dump(pair.index, maxOf(0, hit - 0x60), minOf(pair.index.size, hit + resource.length + 0x80))
+                }
+
+                val hashRows = hashVariants(resource)
+                val hashHits = mutableListOf<Pair<String, Int>>()
+                hashRows.forEach { (name, value) ->
+                    val le = findU32(pair.index, value, true)
+                    val be = findU32(pair.index, value, false)
+                    appendLine("hash ${name.padEnd(16)} = ${hex(value)}  LE=${formatHits(le)} BE=${formatHits(be)}")
+                    le.take(12).forEach { hashHits += "$name/LE" to it }
+                    be.take(12).forEach { hashHits += "$name/BE" to it }
+                }
+
+                val anchors = buildList {
+                    stringHits.forEach { add("ASCII" to it) }
+                    hashHits.forEach { add(it) }
+                }
+                if (anchors.isEmpty()) {
+                    appendLine("ARC offset candidates: unavailable (no name/hash anchor in this index)")
+                } else {
+                    appendLine("anchored index fields and parser-compatible ARC candidates:")
+                    val candidateOffsets = linkedMapOf<Long, String>()
+                    anchors.take(24).forEach { (kind, anchor) ->
+                        appendLine("  anchor $kind @ ${hex(anchor)}")
+                        val from = maxOf(0, anchor - 0x40) and -4
+                        val to = minOf(pair.index.size - 4, anchor + 0x60)
+                        var p = from
+                        while (p <= to) {
+                            val raw = readU32(pair.index, p, true)
+                            appendLine("    ${hex(p)} LE=${hex(raw)}")
+                            listOf(
+                                raw to "raw",
+                                raw * 16L to "x16",
+                                raw * 2048L to "x800",
+                            ).forEach { (offset, transform) ->
+                                if (offset in 0 until pair.arcSize && candidateOffsets.size < 160) {
+                                    candidateOffsets.putIfAbsent(offset, "$kind @ ${hex(p)} $transform")
+                                }
+                            }
+                            p += 4
+                        }
+                    }
+                    val validated = mutableListOf<Triple<Long, String, String>>()
+                    candidateOffsets.entries.take(160).forEach { (offset, source) ->
+                        val length = minOf(0x1000L, pair.arcSize - offset).toInt()
+                        if (length >= 0x30) {
+                            val probe = pair.readArc(offset, length)
+                            probeContainerSummary(probe, pair.arcSize - offset)?.let { summary ->
+                                validated += Triple(offset, source, summary)
+                            }
+                        }
+                    }
+                    if (validated.isEmpty()) appendLine("  parser-compatible ARC candidates: none")
+                    else validated.sortedByDescending { it.third.substringAfter("score=").substringBefore(' ').toIntOrNull() ?: 0 }
+                        .take(24).forEach { (offset, source, summary) ->
+                            appendLine("  ARC ${hex(offset)} from $source -> $summary")
+                            val head = pair.readArc(offset, minOf(0x100, (pair.arcSize - offset).toInt()))
+                            dump(head, 0, head.size)
+                        }
+                }
+                appendLine()
+            }
+        }
+        appendLine("=== decision rule ===")
+        appendLine("An exact/hash index anchor plus a parser-compatible ARC offset is the required ID→physical-resource bridge.")
+        appendLine("Once one candidate is stable, extract that ARC member, run offsetTable[2], then compare glyph descriptors for 0/A/a.")
+        appendLine("No patch writes were performed.")
+    }.trimEnd()
+
+    private fun filteredAsciiStrings(
+        data: ByteArray,
+        limit: Int,
+        predicate: (String) -> Boolean,
+    ): List<Pair<Int, String>> {
+        val out = mutableListOf<Pair<Int, String>>()
+        var p = 0
+        while (p < data.size && out.size < limit) {
+            val start = p
+            while (p < data.size && (data[p].toInt() and 0xff) in 0x20..0x7e) p++
+            if (p - start >= 4) {
+                val text = data.copyOfRange(start, minOf(p, start + 160)).toString(Charsets.US_ASCII)
+                if (predicate(text)) out += start to text
+            }
+            p = maxOf(p + 1, start + 1)
+        }
+        return out
+    }
+
+    private fun findBytes(data: ByteArray, needle: ByteArray): List<Int> {
+        if (needle.isEmpty() || needle.size > data.size) return emptyList()
+        val out = mutableListOf<Int>()
+        var p = 0
+        while (p + needle.size <= data.size && out.size < 64) {
+            var same = true
+            for (i in needle.indices) {
+                if (data[p + i] != needle[i]) {
+                    same = false
+                    break
+                }
+            }
+            if (same) out += p
+            p++
+        }
+        return out
+    }
+
+    private fun findU32(data: ByteArray, value: Long, little: Boolean): List<Int> {
+        val out = mutableListOf<Int>()
+        var p = 0
+        while (p + 4 <= data.size && out.size < 64) {
+            if (readU32(data, p, little) == (value and 0xffffffffL)) out += p
+            p++
+        }
+        return out
+    }
+
+    private fun hashVariants(resource: String): List<Pair<String, Long>> {
+        val forms = linkedMapOf(
+            "raw" to resource,
+            "lower" to resource.lowercase(),
+            "backslash" to resource.replace('/', '\\'),
+            "lower-backslash" to resource.lowercase().replace('/', '\\'),
+        )
+        val out = linkedMapOf<String, Long>()
+        forms.forEach { (formName, text) ->
+            val bytes = text.toByteArray(Charsets.US_ASCII)
+            val crc = java.util.zip.CRC32().apply { update(bytes) }.value
+            out["crc32-$formName"] = crc
+            var fnv = 0x811c9dc5L
+            var djb = 5381L
+            var sdbm = 0L
+            var java31 = 0L
+            bytes.forEach { byte ->
+                val b = byte.toLong() and 0xff
+                fnv = ((fnv xor b) * 0x01000193L) and 0xffffffffL
+                djb = ((djb * 33L) + b) and 0xffffffffL
+                sdbm = (b + (sdbm shl 6) + (sdbm shl 16) - sdbm) and 0xffffffffL
+                java31 = (java31 * 31L + b) and 0xffffffffL
+            }
+            out["fnv1a-$formName"] = fnv
+            out["djb2-$formName"] = djb
+            out["sdbm-$formName"] = sdbm
+            out["x31-$formName"] = java31
+        }
+        return out.entries.map { it.key to it.value }
+    }
+
+    private fun probeContainerSummary(probe: ByteArray, remaining: Long): String? {
+        if (probe.size < 0x30 || remaining < 0x30) return null
+        fun check(little: Boolean): String? {
+            val type = readU32(probe, 4, little)
+            val countLong = readU32(probe, 8, little)
+            if (countLong !in 3L..0x4000L) return null
+            val count = countLong.toInt()
+            if (0x10L + countLong * 4L > remaining) return null
+            val sample = minOf(count, 8)
+            if (0x10 + sample * 4 > probe.size) return null
+            val offsets = (0 until sample).map { readU32(probe, 0x10 + it * 4, little) }
+            if (offsets.any { it >= remaining }) return null
+            var score = 20
+            score += offsets.zipWithNext().count { (a, b) -> b >= a }
+            if (type <= 0x20) score += 6
+            val descriptorEnd = align16(0x10 + count * 4).toLong() + countLong * 0x20L
+            if (descriptorEnd <= remaining) score += 8
+            if (offsets[2] >= descriptorEnd) score += 12
+            return "score=$score endian=${if (little) "LE" else "BE"} type=${hex(type)} count=$count sub2=${hex(offsets[2])}"
+        }
+        val a = check(true)
+        val b = check(false)
+        return listOfNotNull(a, b).maxByOrNull {
+            it.substringAfter("score=").substringBefore(' ').toIntOrNull() ?: 0
+        }
+    }
+
     private val mipsRegisters = arrayOf(
         "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
         "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
