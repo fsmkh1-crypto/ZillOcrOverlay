@@ -17,7 +17,7 @@ import kr.co.zillocr.patcher.patch.Iso9660Reader
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 3.6: correlate virtual font IDs with BIN indexes and ARC payloads. */
+/** PoC 3.7: decode PAA records and resolve exact ARC members. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -29,7 +29,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "pa/pami BIN 인덱스에서 font resource와 ARC offset을 대조 중…"
+        statusView.text = "PAA 레코드를 역탐색하고 ARC 멤버 위치를 계산 중…"
         executor.execute {
             val report = try {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -121,14 +121,14 @@ class GlyphTableActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "PoC 3.6 · BIN/ARC 인덱스 상관분석\n" +
-                "pa.bin↔pa.arc와 pami.bin↔pami.arc의 물리 archive 쌍을 확인했습니다. " +
-                "이번 판은 가상 font ID의 문자열·대표 해시를 BIN에서 찾고, 주변 필드가 가리키는 ARC 위치에 복구한 컨테이너 parser를 적용합니다. 쓰기는 비활성입니다."
+            text = "PoC 3.7 · PAA 레코드/ARC 멤버 해석\n" +
+                "pa.bin의 0x10바이트 레코드와 문자열 풀 구조를 확인했습니다. " +
+                "이번 판은 font ID를 참조하는 레코드를 직접 찾고, record+4 크기의 누적·정렬값으로 ARC 멤버 위치를 산출한 뒤 컨테이너 parser를 적용합니다. 쓰기는 비활성입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · BIN/ARC 대조"
+            text = "원본 ISO 선택 · PAA/ARC 해석"
             setOnClickListener {
                 isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*"))
             }
@@ -140,7 +140,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                        ClipData.newPlainText("zill glyph archive-index correlator v7", latestReport)
+                        ClipData.newPlainText("zill glyph PAA record resolver v8", latestReport)
                     )
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
