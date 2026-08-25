@@ -17,7 +17,7 @@ import kr.co.zillocr.patcher.patch.Iso9660Reader
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 4.0: validate the PAF search tree, Unicode coverage, and GIM atlas geometry. */
+/** PoC 4.1: resolve the PAF GIM page selector with tail-field and atlas collision evidence. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -29,7 +29,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "PAF 이진검색 트리와 4장 GIM 아틀라스를 검증 중…"
+        statusView.text = "PAF 페이지 필드와 GIM 겹침을 검증 중…"
         executor.execute {
             val report = try {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -121,14 +121,14 @@ class GlyphTableActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "PoC 4.0 · PAF 검색트리/아틀라스 검증\n" +
-                "PAF+0x08은 글리프 수, +0x0C는 균형 이진검색 트리의 루트, 각 0x20바이트 레코드의 +0x10/+0x14는 좌·우 자식 인덱스로 판명됐습니다. " +
-                "이번 판은 0/A/a 실제 검색 경로, 전체 유니코드 범위, 한글 포함 여부와 4장 512×512 GIM 아틀라스 배치를 검증합니다. 쓰기는 비활성입니다."
+            text = "PoC 4.1 · GIM 페이지 필드/충돌 검증\n" +
+                "2,637개 글리프의 검색트리와 0/A/a 레코드는 확정됐고 한글 완성형 586자도 확인됐습니다. " +
+                "이번 판은 모든 좌표가 0~511 안에 있는 4장 GIM에서 레코드 +0x18/+0x1C 값 분포와 페이지별 사각형 충돌을 대조하고, 한글 표본과 연속 구간도 출력합니다. 쓰기는 비활성입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · PAF 트리/아틀라스 검증"
+            text = "원본 ISO 선택 · GIM 페이지 필드 검증"
             setOnClickListener {
                 isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*"))
             }
@@ -140,7 +140,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                        ClipData.newPlainText("zill PAF BST atlas validator v11", latestReport)
+                        ClipData.newPlainText("zill PAF page collision resolver v12", latestReport)
                     )
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
