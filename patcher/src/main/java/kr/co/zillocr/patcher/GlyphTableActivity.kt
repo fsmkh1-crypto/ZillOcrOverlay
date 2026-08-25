@@ -17,7 +17,7 @@ import kr.co.zillocr.patcher.patch.Iso9660Reader
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 3.2: trace the source writer for the glyph metadata container. */
+/** PoC 3.3: resolve the exact glyph resource identifier through its loader. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -26,7 +26,7 @@ class GlyphTableActivity : ComponentActivity() {
     private val isoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: SecurityException) {}
-        statusView.text = "glyph metadata 컨테이너의 원본 writer를 추적 중…"
+        statusView.text = "font resource 식별자와 loader를 해석 중…"
         executor.execute {
             val report = try {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -37,7 +37,7 @@ class GlyphTableActivity : ComponentActivity() {
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
             } catch (t: Throwable) {
-                "glyph container-writer trace 실패\n${t::class.java.simpleName}: ${t.message ?: "unknown error"}"
+                "glyph resource-id trace 실패\n${t::class.java.simpleName}: ${t.message ?: "unknown error"}"
             }
             latestReport = report
             runOnUiThread { statusView.text = report }
@@ -53,11 +53,11 @@ class GlyphTableActivity : ComponentActivity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(28), dp(20), dp(28)) }
         root.addView(TextView(this).apply { text = "질올 한글패치"; textSize = 24f })
         root.addView(TextView(this).apply {
-            text = "PoC 3.2 · glyph metadata 컨테이너 원본 추적\n3.1에서 index=2가 base+offsetTable[2]인 세 번째 sub-block임이 확인됐습니다. 이번 판은 컨테이너 헤더 파서와 owner+0x380/+0x384 writer를 추적해 실제 ISO 리소스 출처를 찾습니다."
+            text = "PoC 3.3 · glyph resource-id / loader 추적\nowner+0x384의 실제 writer는 loader VA 0x1CE528이고 식별자는 VA 0x252564로 확정됐습니다. 이번 판은 두 정적 식별자의 원문과 포인터 후보, loader/factory 본체만 좁게 덤프해 실제 ISO/PAA 출처를 결정합니다. 쓰기는 비활성입니다."
             textSize = 14f; setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · container-writer trace"
+            text = "원본 ISO 선택 · resource-id trace"
             setOnClickListener { isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*")) }
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         root.addView(Button(this).apply {
@@ -65,7 +65,7 @@ class GlyphTableActivity : ComponentActivity() {
             setOnClickListener {
                 if (latestReport.isBlank()) Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 else {
-                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zill glyph container writer trace v3", latestReport))
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("zill glyph resource-id loader trace v4", latestReport))
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
