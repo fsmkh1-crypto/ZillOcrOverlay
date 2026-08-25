@@ -17,7 +17,7 @@ import kr.co.zillocr.patcher.patch.Iso9660Reader
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-/** PoC 3.5: resolve virtual font resource IDs through the physical ISO/archive layer. */
+/** PoC 3.6: correlate virtual font IDs with BIN indexes and ARC payloads. */
 class GlyphTableActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var statusView: TextView
@@ -29,7 +29,7 @@ class GlyphTableActivity : ComponentActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) {
         }
-        statusView.text = "가상 resource ID를 실제 archive/index로 추적 중…"
+        statusView.text = "pa/pami BIN 인덱스에서 font resource와 ARC offset을 대조 중…"
         executor.execute {
             val report = try {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -50,13 +50,44 @@ class GlyphTableActivity : ComponentActivity() {
                                 jill = iso.readEntry(jill.entry),
                             )
                         } else {
-                            val boot = iso.readEntry(iso.find("PSP_GAME/SYSDIR/BOOT.BIN"))
-                            GlyphArchiveOriginTrace.virtualResourceReport(
-                                boot = boot,
-                                directZillFound = zill != null,
-                                directJillFound = jill != null,
-                                isoFiles = files,
+                            fun physical(suffix: String) = files.firstOrNull {
+                                it.path.replace('\\', '/').lowercase().endsWith(suffix.lowercase())
+                            }
+                            val pairs = listOfNotNull(
+                                physical("PSP_GAME/USRDIR/pa.bin")?.let { index ->
+                                    physical("PSP_GAME/USRDIR/pa.arc")?.let { arc ->
+                                        GlyphArchiveOriginTrace.ArchivePair(
+                                            indexPath = index.path,
+                                            index = iso.readEntry(index.entry),
+                                            arcPath = arc.path,
+                                            arcSize = arc.entry.size,
+                                            readArc = { offset, length -> iso.readEntryRange(arc.entry, offset, length) },
+                                        )
+                                    }
+                                },
+                                physical("PSP_GAME/USRDIR/pami.bin")?.let { index ->
+                                    physical("PSP_GAME/USRDIR/pami.arc")?.let { arc ->
+                                        GlyphArchiveOriginTrace.ArchivePair(
+                                            indexPath = index.path,
+                                            index = iso.readEntry(index.entry),
+                                            arcPath = arc.path,
+                                            arcSize = arc.entry.size,
+                                            readArc = { offset, length -> iso.readEntryRange(arc.entry, offset, length) },
+                                        )
+                                    }
+                                },
                             )
+                            if (pairs.isNotEmpty()) {
+                                GlyphArchiveOriginTrace.archiveIndexReport(pairs)
+                            } else {
+                                val boot = iso.readEntry(iso.find("PSP_GAME/SYSDIR/BOOT.BIN"))
+                                GlyphArchiveOriginTrace.virtualResourceReport(
+                                    boot = boot,
+                                    directZillFound = zill != null,
+                                    directJillFound = jill != null,
+                                    isoFiles = files,
+                                )
+                            }
                         }
                     }
                 } ?: error("ISO 파일을 열 수 없습니다.")
@@ -90,14 +121,14 @@ class GlyphTableActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "PoC 3.5 · virtual resource/archive 추적\n" +
-                "font/zillfont.par와 2d/font/jillbtn.par는 ISO 경로가 아니라 가상 resource ID입니다. " +
-                "이번 판은 직접 엔트리가 없을 때 내부 loader와 실제 archive/index 후보를 덤프해 ID→물리 파일 연결을 복구합니다. 쓰기는 비활성입니다."
+            text = "PoC 3.6 · BIN/ARC 인덱스 상관분석\n" +
+                "pa.bin↔pa.arc와 pami.bin↔pami.arc의 물리 archive 쌍을 확인했습니다. " +
+                "이번 판은 가상 font ID의 문자열·대표 해시를 BIN에서 찾고, 주변 필드가 가리키는 ARC 위치에 복구한 컨테이너 parser를 적용합니다. 쓰기는 비활성입니다."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(14))
         })
         root.addView(Button(this).apply {
-            text = "원본 ISO 선택 · virtual loader 추적"
+            text = "원본 ISO 선택 · BIN/ARC 대조"
             setOnClickListener {
                 isoPicker.launch(arrayOf("application/octet-stream", "application/x-iso9660-image", "*/*"))
             }
@@ -109,7 +140,7 @@ class GlyphTableActivity : ComponentActivity() {
                     Toast.makeText(this@GlyphTableActivity, "먼저 ISO 분석을 실행하세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                        ClipData.newPlainText("zill glyph virtual-resource trace v6", latestReport)
+                        ClipData.newPlainText("zill glyph archive-index correlator v7", latestReport)
                     )
                     Toast.makeText(this@GlyphTableActivity, "분석 결과를 복사했습니다.", Toast.LENGTH_SHORT).show()
                 }
