@@ -115,103 +115,190 @@ object GlyphArchiveOriginTrace {
         val readArc: (Long, Int) -> ByteArray,
     )
 
-    /** PoC 3.6: correlate virtual IDs with the small BIN indexes and validate ARC offsets. */
+    private data class PaaRecord(
+        val index: Int,
+        val nameOffset: Int,
+        val size: Long,
+        val metaA: Long,
+        val metaB: Long,
+    )
+
+    private data class PaaIndex(
+        val count: Int,
+        val tableStart: Int,
+        val stringStart: Int,
+        val auxiliaryCount: Int,
+        val records: List<PaaRecord>,
+    )
+
+    /** PoC 3.7: decode the PAA record table, reverse-map names, and derive ARC member offsets. */
     fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
-        appendLine("glyph archive-index correlator v7")
-        appendLine("PoC 3.6 · read-only · ISO/BOOT writes disabled")
-        appendLine("Physical layout confirmed: small .bin index paired with large .arc payload.")
+        appendLine("glyph PAA record/ARC member resolver v8")
+        appendLine("PoC 3.7 · read-only · ISO/BOOT writes disabled")
+        appendLine("PAA layout hypothesis: header 0x20, records 0x10 bytes, record+0=name pointer, record+4=member size.")
         appendLine()
+
         val resources = listOf("font/zillfont.par", "2d/font/jillbtn.par")
         pairs.forEach { pair ->
             appendLine("=== ${pair.indexPath} -> ${pair.arcPath} ===")
-            appendLine("index size=${pair.index.size} arc size=${pair.arcSize}")
-            appendLine("index head:")
-            dump(pair.index, 0, minOf(pair.index.size, 0x100))
-            val fontStrings = filteredAsciiStrings(pair.index, 240) { text ->
-                val lower = text.lowercase()
-                "font" in lower || ".par" in lower || "zill" in lower || "jill" in lower
+            appendLine("index size=${pair.index.size} arc size=${pair.arcSize} (${hex(pair.arcSize)})")
+            val paa = parsePaaIndex(pair.index)
+            if (paa == null) {
+                appendLine("PAA header/record table: invalid")
+                appendLine("index head:")
+                dump(pair.index, 0, minOf(pair.index.size, 0x100))
+                appendLine()
+                return@forEach
             }
-            appendLine("font/PAR-related strings:")
-            if (fontStrings.isEmpty()) appendLine("  none")
-            else fontStrings.forEach { (offset, text) -> appendLine("  ${hex(offset)}  '$text'") }
+
+            val calculatedEnd = paa.tableStart.toLong() + paa.count.toLong() * 0x10L
+            appendLine("PAA header: count=${paa.count} tableStart=${hex(paa.tableStart)} stringStart=${hex(paa.stringStart)} auxiliaryCount=${paa.auxiliaryCount}")
+            appendLine("record geometry: tableStart + count*0x10 = ${hex(calculatedEnd)} ; header stringStart = ${hex(paa.stringStart)} ; match=${calculatedEnd == paa.stringStart.toLong()}")
+
+            val modes = listOf(
+                "raw" to 1L,
+                "align16" to 16L,
+                "align0x800" to 0x800L,
+            )
+            val totals = modes.map { (name, alignment) ->
+                var total = 0L
+                paa.records.forEach { total += alignLong(it.size, alignment) }
+                Triple(name, alignment, total)
+            }
+            appendLine("ARC packing totals from record+4:")
+            totals.forEach { (name, _, total) ->
+                appendLine("  ${name.padEnd(10)} total=${hex(total)} delta=${signedHex(total - pair.arcSize)}")
+            }
+            val chosen = totals.minByOrNull { kotlin.math.abs(it.third - pair.arcSize) }!!
+            appendLine("selected packing: ${chosen.first} (smallest absolute end delta ${signedHex(chosen.third - pair.arcSize)})")
             appendLine()
 
             resources.forEach { resource ->
                 appendLine("--- virtual ID: $resource ---")
-                val exactHits = findBytes(pair.index, resource.toByteArray(Charsets.US_ASCII))
-                val lowerHits = findBytes(pair.index, resource.lowercase().toByteArray(Charsets.US_ASCII))
-                val stringHits = (exactHits + lowerHits).distinct().sorted()
-                appendLine("exact ASCII hits: ${formatHits(stringHits)}")
-                stringHits.take(12).forEach { hit ->
-                    appendLine("context @ ${hex(hit)}:")
-                    dump(pair.index, maxOf(0, hit - 0x60), minOf(pair.index.size, hit + resource.length + 0x80))
+                val stringHits = findBytes(pair.index, resource.toByteArray(Charsets.US_ASCII))
+                appendLine("string pool hits: ${formatHits(stringHits)}")
+                val records = paa.records.filter { record ->
+                    stringHits.contains(record.nameOffset) || readAsciiAt(pair.index, record.nameOffset) == resource
+                }
+                if (records.isEmpty()) {
+                    appendLine("record reverse references: none")
+                    appendLine()
+                    return@forEach
                 }
 
-                val hashRows = hashVariants(resource)
-                val hashHits = mutableListOf<Pair<String, Int>>()
-                hashRows.forEach { (name, value) ->
-                    val le = findU32(pair.index, value, true)
-                    val be = findU32(pair.index, value, false)
-                    appendLine("hash ${name.padEnd(16)} = ${hex(value)}  LE=${formatHits(le)} BE=${formatHits(be)}")
-                    le.take(12).forEach { hashHits += "$name/LE" to it }
-                    be.take(12).forEach { hashHits += "$name/BE" to it }
-                }
+                records.forEach { record ->
+                    val recAt = paa.tableStart + record.index * 0x10
+                    appendLine("record #${record.index} @ ${hex(recAt)} name=${hex(record.nameOffset)} size=${hex(record.size)} metaA=${hex(record.metaA)} metaB=${hex(record.metaB)}")
+                    val neighborFrom = maxOf(0, record.index - 2)
+                    val neighborTo = minOf(paa.records.size, record.index + 3)
+                    appendLine("neighbor records:")
+                    for (i in neighborFrom until neighborTo) {
+                        val r = paa.records[i]
+                        appendLine("  #${r.index} rec=${hex(paa.tableStart + r.index * 0x10)} name=${hex(r.nameOffset)} '${readAsciiAt(pair.index, r.nameOffset)}' size=${hex(r.size)} metaA=${hex(r.metaA)} metaB=${hex(r.metaB)}")
+                    }
 
-                val anchors = buildList {
-                    stringHits.forEach { add("ASCII" to it) }
-                    hashHits.forEach { add(it) }
-                }
-                if (anchors.isEmpty()) {
-                    appendLine("ARC offset candidates: unavailable (no name/hash anchor in this index)")
-                } else {
-                    appendLine("anchored index fields and parser-compatible ARC candidates:")
-                    val candidateOffsets = linkedMapOf<Long, String>()
-                    anchors.take(24).forEach { (kind, anchor) ->
-                        appendLine("  anchor $kind @ ${hex(anchor)}")
-                        val from = maxOf(0, anchor - 0x40) and -4
-                        val to = minOf(pair.index.size - 4, anchor + 0x60)
-                        var p = from
-                        while (p <= to) {
-                            val raw = readU32(pair.index, p, true)
-                            appendLine("    ${hex(p)} LE=${hex(raw)}")
-                            listOf(
-                                raw to "raw",
-                                raw * 16L to "x16",
-                                raw * 2048L to "x800",
-                            ).forEach { (offset, transform) ->
-                                if (offset in 0 until pair.arcSize && candidateOffsets.size < 160) {
-                                    candidateOffsets.putIfAbsent(offset, "$kind @ ${hex(p)} $transform")
-                                }
-                            }
-                            p += 4
-                        }
+                    val offsets = modes.map { (name, alignment) ->
+                        var offset = 0L
+                        for (i in 0 until record.index) offset += alignLong(paa.records[i].size, alignment)
+                        Triple(name, alignment, offset)
                     }
-                    val validated = mutableListOf<Triple<Long, String, String>>()
-                    candidateOffsets.entries.take(160).forEach { (offset, source) ->
-                        val length = minOf(0x1000L, pair.arcSize - offset).toInt()
-                        if (length >= 0x30) {
-                            val probe = pair.readArc(offset, length)
-                            probeContainerSummary(probe, pair.arcSize - offset)?.let { summary ->
-                                validated += Triple(offset, source, summary)
-                            }
-                        }
+                    appendLine("candidate ARC member offsets:")
+                    offsets.forEach { (name, _, offset) ->
+                        appendLine("  ${name.padEnd(10)} offset=${hex(offset)} end=${hex(offset + record.size)} inRange=${offset >= 0 && offset + record.size <= pair.arcSize}")
                     }
-                    if (validated.isEmpty()) appendLine("  parser-compatible ARC candidates: none")
-                    else validated.sortedByDescending { it.third.substringAfter("score=").substringBefore(' ').toIntOrNull() ?: 0 }
-                        .take(24).forEach { (offset, source, summary) ->
-                            appendLine("  ARC ${hex(offset)} from $source -> $summary")
-                            val head = pair.readArc(offset, minOf(0x100, (pair.arcSize - offset).toInt()))
-                            dump(head, 0, head.size)
+
+                    val preferredOffset = offsets.first { it.first == chosen.first }.third
+                    if (preferredOffset !in 0 until pair.arcSize) {
+                        appendLine("selected ARC offset is out of range")
+                        return@forEach
+                    }
+
+                    val headLength = minOf(0x4000L, pair.arcSize - preferredOffset).toInt()
+                    val head = pair.readArc(preferredOffset, headLength)
+                    appendLine("selected member head @ ARC ${hex(preferredOffset)}:")
+                    dump(head, 0, minOf(head.size, 0x100))
+                    val summary = probeContainerSummary(head, minOf(record.size, pair.arcSize - preferredOffset))
+                    appendLine("container header at member base: ${summary ?: "none"}")
+
+                    appendLine("nearby parser-compatible headers (±0x800, step 0x10):")
+                    val nearby = mutableListOf<Pair<Long, String>>()
+                    var delta = -0x800
+                    while (delta <= 0x800 && nearby.size < 16) {
+                        val candidate = preferredOffset + delta
+                        if (candidate >= 0 && candidate + 0x100 <= pair.arcSize) {
+                            val probe = pair.readArc(candidate, minOf(0x1000L, pair.arcSize - candidate).toInt())
+                            probeContainerSummary(probe, pair.arcSize - candidate)?.let { nearby += candidate to it }
                         }
+                        delta += 0x10
+                    }
+                    if (nearby.isEmpty()) appendLine("  none")
+                    else nearby.forEach { (offset, text) -> appendLine("  ARC ${hex(offset)} -> $text") }
+
+                    if (summary != null && record.size in 0x30L..0x2000000L && preferredOffset + record.size <= pair.arcSize) {
+                        val member = pair.readArc(preferredOffset, record.size.toInt())
+                        appendLine()
+                        analyze("RESOLVED ARC MEMBER: $resource", "${pair.arcPath}@${hex(preferredOffset)}", member)
+                    } else {
+                        appendLine("full member parse skipped: base header unresolved, invalid size, or member >32 MiB")
+                    }
                 }
                 appendLine()
             }
         }
+
         appendLine("=== decision rule ===")
-        appendLine("An exact/hash index anchor plus a parser-compatible ARC offset is the required ID→physical-resource bridge.")
-        appendLine("Once one candidate is stable, extract that ARC member, run offsetTable[2], then compare glyph descriptors for 0/A/a.")
+        appendLine("A valid reverse record plus a packing total matching ARC size proves ID→record→ARC-member mapping.")
+        appendLine("If the resolved member header is parser-compatible, sub-block[2] and 0/A/a descriptors are dumped immediately.")
+        appendLine("If the member starts compressed/wrapped, use its exact record offset/size to recover only that wrapper next.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
+
+    private fun parsePaaIndex(data: ByteArray): PaaIndex? {
+        if (data.size < 0x30 || data[0] != 0x50.toByte() || data[1] != 0x41.toByte() || data[2] != 0x41.toByte()) return null
+        val countLong = readU32(data, 0x08, true)
+        val tableStartLong = readU32(data, 0x0C, true)
+        val stringStartLong = readU32(data, 0x10, true)
+        val auxiliaryLong = readU32(data, 0x14, true)
+        if (countLong !in 1L..0x100000L || tableStartLong > Int.MAX_VALUE || stringStartLong > data.size.toLong()) return null
+        val count = countLong.toInt()
+        val tableStart = tableStartLong.toInt()
+        val stringStart = stringStartLong.toInt()
+        if (tableStart < 0x18 || tableStart.toLong() + countLong * 0x10L != stringStartLong) return null
+        if (stringStart > data.size) return null
+        val records = ArrayList<PaaRecord>(count)
+        for (i in 0 until count) {
+            val at = tableStart + i * 0x10
+            if (at + 0x10 > data.size) return null
+            val nameLong = readU32(data, at, true)
+            if (nameLong > Int.MAX_VALUE) return null
+            records += PaaRecord(
+                index = i,
+                nameOffset = nameLong.toInt(),
+                size = readU32(data, at + 4, true),
+                metaA = readU32(data, at + 8, true),
+                metaB = readU32(data, at + 12, true),
+            )
+        }
+        return PaaIndex(count, tableStart, stringStart, auxiliaryLong.toInt(), records)
+    }
+
+    private fun readAsciiAt(data: ByteArray, offset: Int): String {
+        if (offset !in data.indices) return "<out-of-range>"
+        var end = offset
+        while (end < data.size && end - offset < 192) {
+            val c = data[end].toInt() and 0xff
+            if (c == 0) break
+            if (c !in 0x20..0x7e) return "<non-ascii>"
+            end++
+        }
+        return data.copyOfRange(offset, end).toString(Charsets.US_ASCII)
+    }
+
+    private fun alignLong(value: Long, alignment: Long): Long =
+        if (alignment <= 1L) value else (value + alignment - 1L) and -alignment
+
+    private fun signedHex(value: Long): String =
+        if (value < 0) "-0x${(-value).toString(16).uppercase()}" else "+0x${value.toString(16).uppercase()}"
 
     private fun filteredAsciiStrings(
         data: ByteArray,
