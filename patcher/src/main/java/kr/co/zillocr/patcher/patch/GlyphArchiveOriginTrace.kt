@@ -131,10 +131,10 @@ object GlyphArchiveOriginTrace {
         val records: List<PaaRecord>,
     )
 
-    /** PoC 3.9: resolve wrapped PAR and decode the embedded PAF glyph descriptor table. */
+    /** PoC 4.0: validate the PAF binary-search tree, Unicode coverage, and four-page GIM atlas geometry. */
     fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
-        appendLine("glyph PAF glyph-descriptor resolver v10")
-        appendLine("PoC 3.9 · read-only · ISO/BOOT writes disabled")
+        appendLine("glyph PAF BST/atlas validator v11")
+        appendLine("PoC 4.0 · read-only · ISO/BOOT writes disabled")
         appendLine("Proven layout: PAA header 0x20, records 0x10, align16 ARC packing; ARC member may carry a 0x10-byte prefix before PAR.")
         appendLine()
 
@@ -269,7 +269,7 @@ object GlyphArchiveOriginTrace {
         appendLine("=== decision rule ===")
         appendLine("Reverse record plus align16 total proves ID→record→ARC-member mapping; PAR magic at member+0x10 proves the wrapper boundary.")
         appendLine("The wrapped PAR base is forced into the recovered parser so sub-block[2] and 0/A/a descriptor hypotheses are dumped without false-header selection.")
-        appendLine("For owner+0x384, offsetTable[2] is zillfont.paf; PAF+0x20 supplies recordOffset and the descriptor scan proves exact U+0030/U+0041/U+0061 records.")
+        appendLine("For owner+0x384, zillfont.paf supplies a sorted glyph array, root index, child links, and four-page atlas coordinates; this run validates all four together.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
 
@@ -747,6 +747,196 @@ object GlyphArchiveOriginTrace {
                 appendLine("  '${cp.toChar()}' U+${cp.toString(16).uppercase().padStart(4, '0')} @ ${hex(at)}  ${inlineHex(data, at, stride)}")
             }
         }
+
+        analyzePafBstAtlas(data, subStart, subEnd, recordBase, declaredA.toInt(), declaredB.toInt(), headerField22, stride)
+    }
+
+
+    private fun StringBuilder.analyzePafBstAtlas(
+        data: ByteArray,
+        subStart: Int,
+        subEnd: Int,
+        recordBase: Int,
+        declaredCount: Int,
+        rootIndex: Int,
+        pageCount: Int,
+        stride: Int,
+    ) {
+        if (declaredCount <= 0 || declaredCount > 0x100000) return
+        fun availableFor(bytes: Int): Int {
+            val remaining = subEnd - recordBase
+            return if (remaining < bytes) 0 else minOf(declaredCount, (remaining - bytes) / stride + 1)
+        }
+        val coreCount = availableFor(0x10)
+        val childCount = availableFor(0x18)
+        val fullCount = availableFor(0x20)
+        val cp = IntArray(coreCount)
+        val w = IntArray(coreCount)
+        val h = IntArray(coreCount)
+        val x = IntArray(coreCount)
+        val y = IntArray(coreCount)
+        val left = IntArray(coreCount) { Int.MIN_VALUE }
+        val right = IntArray(coreCount) { Int.MIN_VALUE }
+        for (i in 0 until coreCount) {
+            val at = recordBase + i * stride
+            cp[i] = readU16(data, at, true)
+            w[i] = data[at + 2].toInt() and 0xff
+            h[i] = data[at + 3].toInt() and 0xff
+            x[i] = readU16(data, at + 4, true)
+            y[i] = readU16(data, at + 6, true)
+            if (i < childCount) {
+                left[i] = readU32(data, at + 0x10, true).toInt()
+                right[i] = readU32(data, at + 0x14, true).toInt()
+            }
+        }
+        fun u(value: Int): String = "U+" + value.toString(16).uppercase().padStart(4, '0')
+
+        var sortErrors = 0
+        var duplicates = 0
+        for (i in 1 until coreCount) {
+            if (cp[i] <= cp[i - 1]) {
+                sortErrors++
+                if (cp[i] == cp[i - 1]) duplicates++
+            }
+        }
+        var rangeErrors = 0
+        var orderErrors = 0
+        var linksToMissingTail = 0
+        for (i in 0 until childCount) {
+            for (child in intArrayOf(left[i], right[i])) {
+                if (child != -1 && child !in 0 until declaredCount) rangeErrors++
+                if (child in coreCount until declaredCount) linksToMissingTail++
+            }
+            if (left[i] in 0 until coreCount && cp[left[i]] >= cp[i]) orderErrors++
+            if (right[i] in 0 until coreCount && cp[right[i]] <= cp[i]) orderErrors++
+        }
+
+        val reached = BooleanArray(declaredCount)
+        var repeatedEdges = 0
+        if (rootIndex in reached.indices) {
+            val stack = mutableListOf(rootIndex)
+            while (stack.isNotEmpty()) {
+                val i = stack.removeAt(stack.lastIndex)
+                if (i !in reached.indices) continue
+                if (reached[i]) {
+                    repeatedEdges++
+                    continue
+                }
+                reached[i] = true
+                if (i < childCount) {
+                    if (left[i] != -1) stack += left[i]
+                    if (right[i] != -1) stack += right[i]
+                }
+            }
+        }
+        val reachedCount = reached.count { it }
+        appendLine("PAF BST validation:")
+        appendLine("  headerRoot=${hex(rootIndex)} midpoint=${hex(declaredCount / 2)} rootIsMidpoint=${rootIndex == declaredCount / 2}")
+        appendLine("  sortedAscending=${sortErrors == 0} sortErrors=$sortErrors duplicates=$duplicates")
+        appendLine("  childRangeErrors=$rangeErrors childOrderingErrors=$orderErrors linksToMissingTail=$linksToMissingTail")
+        appendLine("  reachable=$reachedCount/$declaredCount repeatedOrCycleEdges=$repeatedEdges unreachable=${declaredCount - reachedCount}")
+
+        fun lookup(target: Int): String {
+            val path = mutableListOf<String>()
+            val seen = mutableSetOf<Int>()
+            var i = rootIndex
+            var result = "not found"
+            while (i in 0 until declaredCount && seen.add(i) && path.size < 64) {
+                if (i >= coreCount) {
+                    path += "$i:<missing>"
+                    result = "record body unavailable"
+                    break
+                }
+                val value = cp[i]
+                path += "$i:${u(value)}"
+                if (value == target) {
+                    result = "FOUND @ ${hex(recordBase + i * stride)}"
+                    break
+                }
+                if (i >= childCount) {
+                    result = "child links unavailable"
+                    break
+                }
+                i = if (target < value) left[i] else right[i]
+                if (i == -1) {
+                    result = "not found (-1)"
+                    break
+                }
+            }
+            return path.joinToString(" -> ") + " => " + result
+        }
+        appendLine("BST lookup paths:")
+        for (target in listOf(0x30, 0x41, 0x61, 0x40, 0x60, 0xAC00)) {
+            appendLine("  ${u(target)}: ${lookup(target)}")
+        }
+
+        val ranges = listOf(
+            "ASCII" to (0x0000..0x007F),
+            "Latin-1 supplement" to (0x0080..0x00FF),
+            "Hangul Jamo" to (0x1100..0x11FF),
+            "Hiragana" to (0x3040..0x309F),
+            "Katakana" to (0x30A0..0x30FF),
+            "Hangul Compatibility Jamo" to (0x3130..0x318F),
+            "CJK Unified Ideographs" to (0x4E00..0x9FFF),
+            "Hangul Syllables" to (0xAC00..0xD7A3),
+        )
+        appendLine("Unicode coverage:")
+        appendLine("  coreRecords=$coreCount childRecords=$childCount fullRecords=$fullCount")
+        appendLine("  min=${if (coreCount == 0) "none" else u(cp.minOrNull()!!)} max=${if (coreCount == 0) "none" else u(cp.maxOrNull()!!)} zeroSized=${(0 until coreCount).count { w[it] == 0 || h[it] == 0 }}")
+        for ((label, range) in ranges) appendLine("  $label: ${(0 until coreCount).count { cp[it] in range }}")
+        appendLine("  Hangul probes: U+1100=${cp.count { it == 0x1100 }} U+3131=${cp.count { it == 0x3131 }} U+AC00=${cp.count { it == 0xAC00 }} U+D7A3=${cp.count { it == 0xD7A3 }}")
+
+        val pages = pageCount.coerceAtLeast(1)
+        val verticalCounts = IntArray(pages)
+        val horizontalCounts = IntArray(pages)
+        val verticalBottom = IntArray(pages)
+        val horizontalRight = IntArray(pages)
+        var verticalErrors = 0
+        var horizontalErrors = 0
+        var maxX = 0
+        var maxY = 0
+        var glyphs = 0
+        for (i in 0 until coreCount) {
+            if (w[i] == 0 || h[i] == 0) continue
+            glyphs++
+            maxX = maxOf(maxX, x[i] + w[i])
+            maxY = maxOf(maxY, y[i] + h[i])
+            val vp = y[i] / 0x200
+            val localY = y[i] % 0x200
+            if (x[i] + w[i] > 0x200 || vp !in verticalCounts.indices || localY + h[i] > 0x200) {
+                verticalErrors++
+            } else {
+                verticalCounts[vp]++
+                verticalBottom[vp] = maxOf(verticalBottom[vp], localY + h[i])
+            }
+            val hp = x[i] / 0x200
+            val localX = x[i] % 0x200
+            if (y[i] + h[i] > 0x200 || hp !in horizontalCounts.indices || localX + w[i] > 0x200) {
+                horizontalErrors++
+            } else {
+                horizontalCounts[hp]++
+                horizontalRight[hp] = maxOf(horizontalRight[hp], localX + w[i])
+            }
+        }
+        var reservedNonZero = 0
+        for (i in 0 until fullCount) {
+            val at = recordBase + i * stride
+            if (readU32(data, at + 0x18, true) != 0L || readU32(data, at + 0x1C, true) != 0L) reservedNonZero++
+        }
+        appendLine("atlas geometry hypotheses (512x512 x $pageCount GIM pages):")
+        appendLine("  glyphs=$glyphs maxExclusive=(${hex(maxX)},${hex(maxY)}) reservedNonZero=$reservedNonZero")
+        appendLine("  vertical global-Y: errors=$verticalErrors counts=${verticalCounts.joinToString()} localBottom=${verticalBottom.joinToString()}")
+        appendLine("  horizontal global-X: errors=$horizontalErrors counts=${horizontalCounts.joinToString()} localRight=${horizontalRight.joinToString()}")
+        appendLine("  preferred=${when { verticalErrors < horizontalErrors -> "vertical global-Y"; horizontalErrors < verticalErrors -> "horizontal global-X"; else -> "undecided" }}")
+
+        val missing = (0x20..0x7E).filter { target -> cp.none { it == target } }
+        appendLine("dense sorted-array proof:")
+        appendLine("  printable missing=${missing.joinToString { u(it) }}")
+        val zero = cp.indexOf(0x30)
+        val upper = cp.indexOf(0x41)
+        val lower = cp.indexOf(0x61)
+        appendLine("  indices: '0'=$zero 'A'=$upper 'a'=$lower; deltas=${upper - zero},${lower - upper}")
+        appendLine("  codepoint deltas: ${0x41 - 0x30},${0x61 - 0x41}; missing codepoints explain each one-record contraction")
     }
 
     private fun findHeaders(data: ByteArray): List<Header> {
