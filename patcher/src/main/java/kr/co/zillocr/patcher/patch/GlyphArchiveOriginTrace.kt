@@ -1,6 +1,6 @@
 package kr.co.zillocr.patcher.patch
 
-/** PoC 3.0 read-only trace: identify the loader/resource that supplies glyph metadata. */
+/** PoC 3.3 read-only trace: resolve the exact glyph resource identifiers through their loader. */
 object GlyphArchiveOriginTrace {
     private val regs = arrayOf(
         "zero","at","v0","v1","a0","a1","a2","a3","t0","t1","t2","t3","t4","t5","t6","t7",
@@ -34,7 +34,7 @@ object GlyphArchiveOriginTrace {
         appendLine()
 
         appendLine("=== resource loader VA 0x1CE528 / file 0x1CE5A8 ===")
-        appendLine("The fourth call argument is the owner field address; trace stores/callbacks that reach it.")
+        appendLine("The third call argument (a2) is the owner field address; trace stores/callbacks that reach it.")
         dump(boot, 0x1CE5A8, 0x1CE8F8, setOf(0x1CE5A8))
         appendLine()
 
