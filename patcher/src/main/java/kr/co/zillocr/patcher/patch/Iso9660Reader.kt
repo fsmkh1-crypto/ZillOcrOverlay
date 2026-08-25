@@ -17,6 +17,8 @@ class Iso9660Reader(private val channel: SeekableByteChannel) {
         val isMultiExtent: Boolean get() = flags and 0x80 != 0
     }
 
+    data class LocatedEntry(val path: String, val entry: Entry)
+
     companion object {
         const val SECTOR_SIZE = 2048
         private const val PVD_SECTOR = 16L
@@ -28,7 +30,7 @@ class Iso9660Reader(private val channel: SeekableByteChannel) {
         val parts = path.split('/').map { it.trim() }.filter { it.isNotEmpty() }
         var current = root
         for ((index, part) in parts.withIndex()) {
-            if (!current.isDirectory) error("${parts.take(index).joinToString("/")} is not a directory")
+            if (!current.isDirectory) error("${parts.take(index).joinToString("/") } is not a directory")
             val next = listDirectory(current)
                 .firstOrNull { normalizeName(it.name).equals(normalizeName(part), ignoreCase = true) }
                 ?: error("ISO path component not found: $part")
@@ -36,6 +38,27 @@ class Iso9660Reader(private val channel: SeekableByteChannel) {
             current = next
         }
         return current
+    }
+
+    /** Finds a resource independent of the game's platform-specific data-root prefix. */
+    fun findBySuffix(pathSuffix: String): LocatedEntry? {
+        val wanted = normalizePath(pathSuffix)
+        fun walk(directory: Entry, prefix: String, depth: Int): LocatedEntry? {
+            if (depth > 32) return null
+            for (child in listDirectory(directory)) {
+                val clean = normalizeName(child.name)
+                val path = if (prefix.isEmpty()) clean else "$prefix/$clean"
+                if (!child.isDirectory && normalizePath(path).endsWith(wanted)) {
+                    if (child.isMultiExtent) error("multi-extent ISO files are not supported yet: $path")
+                    return LocatedEntry(path, child)
+                }
+                if (child.isDirectory) {
+                    walk(child, path, depth + 1)?.let { return it }
+                }
+            }
+            return null
+        }
+        return walk(root, "", 0)
     }
 
     fun readEntry(entry: Entry): ByteArray {
@@ -112,6 +135,8 @@ class Iso9660Reader(private val channel: SeekableByteChannel) {
     }
 
     private fun normalizeName(name: String): String = name.substringBefore(';').trimEnd('.')
+    private fun normalizePath(path: String): String =
+        path.replace('\\', '/').trim('/').lowercase()
 
     private fun u32le(data: ByteArray, offset: Int): Long = ByteBuffer
         .wrap(data, offset, 4)
