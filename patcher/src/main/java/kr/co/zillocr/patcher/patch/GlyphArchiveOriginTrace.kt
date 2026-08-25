@@ -131,11 +131,11 @@ object GlyphArchiveOriginTrace {
         val records: List<PaaRecord>,
     )
 
-    /** PoC 3.7: decode the PAA record table, reverse-map names, and derive ARC member offsets. */
+    /** PoC 3.8: resolve PAA records, ARC members, and the 0x10-byte member wrapper before PAR. */
     fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
-        appendLine("glyph PAA record/ARC member resolver v8")
-        appendLine("PoC 3.7 · read-only · ISO/BOOT writes disabled")
-        appendLine("PAA layout hypothesis: header 0x20, records 0x10 bytes, record+0=name pointer, record+4=member size.")
+        appendLine("glyph wrapped-PAR/sub-block resolver v9")
+        appendLine("PoC 3.8 · read-only · ISO/BOOT writes disabled")
+        appendLine("Proven layout: PAA header 0x20, records 0x10, align16 ARC packing; ARC member may carry a 0x10-byte prefix before PAR.")
         appendLine()
 
         val resources = listOf("font/zillfont.par", "2d/font/jillbtn.par")
@@ -217,8 +217,23 @@ object GlyphArchiveOriginTrace {
                     val head = pair.readArc(preferredOffset, headLength)
                     appendLine("selected member head @ ARC ${hex(preferredOffset)}:")
                     dump(head, 0, minOf(head.size, 0x100))
-                    val summary = probeContainerSummary(head, minOf(record.size, pair.arcSize - preferredOffset))
-                    appendLine("container header at member base: ${summary ?: "none"}")
+                    val memberRemaining = minOf(record.size, pair.arcSize - preferredOffset)
+                    val baseSummary = probeContainerSummary(head, memberRemaining)
+                    appendLine("container header at member base: ${baseSummary ?: "none"}")
+
+                    val parBase = findWrappedParBase(head, memberRemaining)
+                    if (parBase == null) {
+                        appendLine("wrapped PAR header in first 0x100 bytes: none")
+                    } else {
+                        val wrappedProbe = head.copyOfRange(parBase, head.size)
+                        val wrappedSummary = probeContainerSummary(wrappedProbe, memberRemaining - parBase)
+                        appendLine("wrapped PAR header: member+${hex(parBase)} = ARC ${hex(preferredOffset + parBase)}")
+                        appendLine("wrapped PAR summary: ${wrappedSummary ?: "invalid"}")
+                        if (parBase > 0) {
+                            appendLine("wrapper prefix (${hex(parBase)} bytes):")
+                            dump(head, 0, parBase)
+                        }
+                    }
 
                     appendLine("nearby parser-compatible headers (±0x800, step 0x10):")
                     val nearby = mutableListOf<Pair<Long, String>>()
@@ -234,12 +249,17 @@ object GlyphArchiveOriginTrace {
                     if (nearby.isEmpty()) appendLine("  none")
                     else nearby.forEach { (offset, text) -> appendLine("  ARC ${hex(offset)} -> $text") }
 
-                    if (summary != null && record.size in 0x30L..0x2000000L && preferredOffset + record.size <= pair.arcSize) {
+                    if (parBase != null && record.size in 0x30L..0x2000000L && preferredOffset + record.size <= pair.arcSize) {
                         val member = pair.readArc(preferredOffset, record.size.toInt())
                         appendLine()
-                        analyze("RESOLVED ARC MEMBER: $resource", "${pair.arcPath}@${hex(preferredOffset)}", member)
+                        analyze(
+                            "RESOLVED WRAPPED PAR MEMBER: $resource",
+                            "${pair.arcPath}@${hex(preferredOffset)} PAR+${hex(parBase)}",
+                            member,
+                            forcedBase = parBase,
+                        )
                     } else {
-                        appendLine("full member parse skipped: base header unresolved, invalid size, or member >32 MiB")
+                        appendLine("full member parse skipped: wrapped PAR unresolved, invalid size, or member >32 MiB")
                     }
                 }
                 appendLine()
@@ -247,9 +267,9 @@ object GlyphArchiveOriginTrace {
         }
 
         appendLine("=== decision rule ===")
-        appendLine("A valid reverse record plus a packing total matching ARC size proves ID→record→ARC-member mapping.")
-        appendLine("If the resolved member header is parser-compatible, sub-block[2] and 0/A/a descriptors are dumped immediately.")
-        appendLine("If the member starts compressed/wrapped, use its exact record offset/size to recover only that wrapper next.")
+        appendLine("Reverse record plus align16 total proves ID→record→ARC-member mapping; PAR magic at member+0x10 proves the wrapper boundary.")
+        appendLine("The wrapped PAR base is forced into the recovered parser so sub-block[2] and 0/A/a descriptor hypotheses are dumped without false-header selection.")
+        appendLine("For owner+0x384, PAR offsetTable[2] is the embedded zillfont.paf payload used for final glyph-layout validation.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
 
@@ -376,6 +396,25 @@ object GlyphArchiveOriginTrace {
             out["x31-$formName"] = java31
         }
         return out.entries.map { it.key to it.value }
+    }
+
+    private fun findWrappedParBase(data: ByteArray, remaining: Long): Int? {
+        val maxBase = minOf(0x100, data.size - 0x30)
+        if (maxBase < 0) return null
+        var base = 0
+        while (base <= maxBase) {
+            val isPar =
+                data[base] == 0x50.toByte() &&
+                    data[base + 1] == 0x41.toByte() &&
+                    data[base + 2] == 0x52.toByte() &&
+                    data[base + 3] == 0.toByte()
+            if (isPar) {
+                val probe = data.copyOfRange(base, data.size)
+                if (probeContainerSummary(probe, remaining - base) != null) return base
+            }
+            base += 0x10
+        }
+        return null
     }
 
     private fun probeContainerSummary(probe: ByteArray, remaining: Long): String? {
@@ -506,7 +545,12 @@ object GlyphArchiveOriginTrace {
         }
     }
 
-    private fun StringBuilder.analyze(label: String, path: String, data: ByteArray) {
+    private fun StringBuilder.analyze(
+        label: String,
+        path: String,
+        data: ByteArray,
+        forcedBase: Int? = null,
+    ) {
         appendLine("=== $label ===")
         appendLine("ISO path: $path")
         appendLine("file size: ${data.size} (${hex(data.size)})")
@@ -518,7 +562,14 @@ object GlyphArchiveOriginTrace {
         if (strings.isEmpty()) appendLine("  none")
         else strings.forEach { (offset, text) -> appendLine("  ${hex(offset)}  '$text'") }
 
-        val candidates = findHeaders(data)
+        val candidates = if (forcedBase == null) {
+            findHeaders(data)
+        } else {
+            listOfNotNull(
+                headerAt(data, forcedBase, true),
+                headerAt(data, forcedBase, false),
+            ).sortedByDescending { it.score }
+        }
         if (candidates.isEmpty()) {
             appendLine("parser-compatible container header: none")
             return
