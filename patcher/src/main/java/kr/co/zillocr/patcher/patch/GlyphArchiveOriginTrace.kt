@@ -131,10 +131,10 @@ object GlyphArchiveOriginTrace {
         val records: List<PaaRecord>,
     )
 
-    /** PoC 3.8: resolve PAA records, ARC members, and the 0x10-byte member wrapper before PAR. */
+    /** PoC 3.9: resolve wrapped PAR and decode the embedded PAF glyph descriptor table. */
     fun archiveIndexReport(pairs: List<ArchivePair>): String = buildString {
-        appendLine("glyph wrapped-PAR/sub-block resolver v9")
-        appendLine("PoC 3.8 · read-only · ISO/BOOT writes disabled")
+        appendLine("glyph PAF glyph-descriptor resolver v10")
+        appendLine("PoC 3.9 · read-only · ISO/BOOT writes disabled")
         appendLine("Proven layout: PAA header 0x20, records 0x10, align16 ARC packing; ARC member may carry a 0x10-byte prefix before PAR.")
         appendLine()
 
@@ -269,7 +269,7 @@ object GlyphArchiveOriginTrace {
         appendLine("=== decision rule ===")
         appendLine("Reverse record plus align16 total proves ID→record→ARC-member mapping; PAR magic at member+0x10 proves the wrapper boundary.")
         appendLine("The wrapped PAR base is forced into the recovered parser so sub-block[2] and 0/A/a descriptor hypotheses are dumped without false-header selection.")
-        appendLine("For owner+0x384, PAR offsetTable[2] is the embedded zillfont.paf payload used for final glyph-layout validation.")
+        appendLine("For owner+0x384, offsetTable[2] is zillfont.paf; PAF+0x20 supplies recordOffset and the descriptor scan proves exact U+0030/U+0041/U+0061 records.")
         appendLine("No patch writes were performed.")
     }.trimEnd()
 
@@ -642,6 +642,111 @@ object GlyphArchiveOriginTrace {
                 }
             }
         }
+
+        analyzePafGlyphTable(data, subStart, subEnd)
+    }
+
+    private fun StringBuilder.analyzePafGlyphTable(
+        data: ByteArray,
+        subStart: Int,
+        subEnd: Int,
+    ) {
+        if (subEnd - subStart < 0x70) return
+        val isPaf =
+            data[subStart] == 0x70.toByte() &&
+                data[subStart + 1] == 0x61.toByte() &&
+                data[subStart + 2] == 0x66.toByte() &&
+                data[subStart + 3] == 0.toByte()
+        if (!isPaf) return
+
+        val version = readU32(data, subStart + 4, true)
+        val declaredA = readU32(data, subStart + 8, true)
+        val declaredB = readU32(data, subStart + 12, true)
+        val name = readAsciiAt(data, subStart + 0x10)
+        val recordRelative = readU16(data, subStart + 0x20, true)
+        val headerField22 = readU16(data, subStart + 0x22, true)
+        val stride = 0x20
+        val recordBase = subStart + recordRelative
+        if (recordRelative < 0x20 || recordBase !in subStart until subEnd) {
+            appendLine("PAF glyph table: invalid record base ${hex(recordRelative)}")
+            return
+        }
+
+        val availableRecords = (subEnd - recordBase) / stride
+        val trailing = (subEnd - recordBase) % stride
+        appendLine("PAF glyph-table interpretation:")
+        appendLine("  magic='paf\\0' version=${hex(version)} name='$name'")
+        appendLine("  header+0x08=${hex(declaredA)} header+0x0C=${hex(declaredB)}")
+        appendLine("  recordOffset=${hex(recordRelative)} header+0x22=${hex(headerField22)} inferredStride=${hex(stride)}")
+        appendLine("  recordBase=${hex(recordBase)} availableFullRecords=$availableRecords trailingBytes=${hex(trailing)}")
+        appendLine("  declaredA*stride end=${hex(recordBase.toLong() + declaredA * stride)} deltaFromSubEnd=${signedHex(recordBase.toLong() + declaredA * stride - subEnd.toLong())}")
+
+        fun recordsFor(codepoint: Int): List<Int> {
+            val out = mutableListOf<Int>()
+            for (i in 0 until availableRecords) {
+                val at = recordBase + i * stride
+                if (readU16(data, at, true) == codepoint) out += at
+            }
+            return out
+        }
+
+        val ascii = (0x20..0x7E).associateWith { cp -> recordsFor(cp).firstOrNull() }
+        val missing = ascii.filterValues { it == null }.keys
+        val linear = (0x20 until 0x7E).all { cp ->
+            val a = ascii[cp]
+            val b = ascii[cp + 1]
+            a != null && b == a + stride
+        }
+        appendLine("  printable ASCII U+0020..U+007E: missing=${if (missing.isEmpty()) "none" else missing.joinToString { "U+${it.toString(16).uppercase().padStart(4, '0')}" }} linearStride0x20=$linear")
+        appendLine("  U+0009 records=${formatHits(recordsFor(0x09))}; U+0020 records=${formatHits(recordsFor(0x20))}")
+
+        fun appendDescriptor(codepoint: Int) {
+            val hits = recordsFor(codepoint)
+            val label = when (codepoint) {
+                0x30 -> "0"
+                0x41 -> "A"
+                0x61 -> "a"
+                else -> codepoint.toChar().toString()
+            }
+            if (hits.isEmpty()) {
+                appendLine("  '$label' U+${codepoint.toString(16).uppercase().padStart(4, '0')}: not found")
+                return
+            }
+            hits.forEachIndexed { index, at ->
+                val width = data[at + 2].toInt() and 0xff
+                val height = data[at + 3].toInt() and 0xff
+                val atlasX = readU16(data, at + 4, true)
+                val atlasY = readU16(data, at + 6, true)
+                val bearingX = readS16(data, at + 8, true)
+                val bearingY = readS16(data, at + 10, true)
+                val advance = readU32(data, at + 12, true)
+                appendLine("  '$label' U+${codepoint.toString(16).uppercase().padStart(4, '0')}[${index}] @ ${hex(at)}")
+                appendLine("    bitmap=${width}x$height atlas=(${hex(atlasX)},${hex(atlasY)}) bearing=($bearingX,$bearingY) advanceCandidate=$advance")
+                appendLine("    tail+0x10: ${inlineHex(data, at + 0x10, 0x10)}")
+                appendLine("    raw: ${inlineHex(data, at, stride)}")
+            }
+        }
+
+        appendLine("exact glyph descriptors:")
+        listOf(0x30, 0x41, 0x61).forEach(::appendDescriptor)
+        val zero = recordsFor(0x30).firstOrNull()
+        val upperA = recordsFor(0x41).firstOrNull()
+        val lowerA = recordsFor(0x61).firstOrNull()
+        if (zero != null && upperA != null && lowerA != null) {
+            appendLine("descriptor spacing proof:")
+            appendLine("  '0'→'A' delta=${hex(upperA - zero)} records=${(upperA - zero) / stride} expectedCodepointDelta=${0x41 - 0x30}")
+            appendLine("  'A'→'a' delta=${hex(lowerA - upperA)} records=${(lowerA - upperA) / stride} expectedCodepointDelta=${0x61 - 0x41}")
+        }
+
+        appendLine("neighbor descriptors:")
+        listOf(0x2F, 0x30, 0x31, 0x40, 0x41, 0x42, 0x60, 0x61, 0x62).forEach { cp ->
+            val at = recordsFor(cp).firstOrNull()
+            if (at == null) {
+                appendLine("  U+${cp.toString(16).uppercase().padStart(4, '0')}: missing")
+            } else {
+                appendLine("  '${cp.toChar()}' U+${cp.toString(16).uppercase().padStart(4, '0')} @ ${hex(at)}  ${inlineHex(data, at, stride)}")
+            }
+        }
     }
 
     private fun findHeaders(data: ByteArray): List<Header> {
@@ -768,6 +873,11 @@ object GlyphArchiveOriginTrace {
         val a = data[offset].toInt() and 0xff
         val b = data[offset + 1].toInt() and 0xff
         return if (little) a or (b shl 8) else (a shl 8) or b
+    }
+
+    private fun readS16(data: ByteArray, offset: Int, little: Boolean): Int {
+        val value = readU16(data, offset, little)
+        return if (value >= 0x8000) value - 0x10000 else value
     }
 
     private fun readU32(data: ByteArray, offset: Int, little: Boolean): Long {
