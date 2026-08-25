@@ -152,10 +152,10 @@ object GlyphArchiveOriginTrace {
         val sampleCount = minOf(count, 8)
         val relative = (0 until sampleCount).map { readU32(data, base + 0x10 + it * 4, little) }
         if (relative[2] >= remaining.toLong()) return null
-        val valid = relative.count { it in 0 until remaining.toLong() }
+        val valid = relative.count { it in 0L until remaining.toLong() }
         if (valid < minOf(3, sampleCount)) return null
         val nondecreasing = relative.zipWithNext().count { (a, b) -> b >= a }
-        val afterTables = relative.count { it >= descriptorEnd - base && it < remaining }
+        val afterTables = relative.count { it >= descriptorEnd - base.toLong() && it < remaining }
 
         var score = 20
         if (base == 0) score += 12
@@ -163,7 +163,7 @@ object GlyphArchiveOriginTrace {
         score += valid * 2
         score += nondecreasing
         score += afterTables * 2
-        if (relative[2] >= descriptorEnd - base) score += 8
+        if (relative[2] >= descriptorEnd - base.toLong()) score += 8
         return Header(base, little, type, count, descriptorBase, score)
     }
 
