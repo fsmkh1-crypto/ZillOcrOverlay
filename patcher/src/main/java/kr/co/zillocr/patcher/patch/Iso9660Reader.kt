@@ -61,6 +61,25 @@ class Iso9660Reader(private val channel: SeekableByteChannel) {
         return walk(root, "", 0)
     }
 
+    /** Recursively lists every regular ISO9660 file without assuming game resource paths. */
+    fun listFiles(): List<LocatedEntry> {
+        val result = mutableListOf<LocatedEntry>()
+        fun walk(directory: Entry, prefix: String, depth: Int) {
+            if (depth > 32) return
+            for (child in listDirectory(directory)) {
+                val clean = normalizeName(child.name)
+                val path = if (prefix.isEmpty()) clean else "$prefix/$clean"
+                if (child.isDirectory) {
+                    walk(child, path, depth + 1)
+                } else {
+                    result += LocatedEntry(path, child)
+                }
+            }
+        }
+        walk(root, "", 0)
+        return result
+    }
+
     fun readEntry(entry: Entry): ByteArray {
         require(entry.size <= Int.MAX_VALUE) { "entry is too large to read into memory: ${entry.name}" }
         return readAt(entry.extentLba * SECTOR_SIZE, entry.size.toInt())
