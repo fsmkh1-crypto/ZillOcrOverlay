@@ -8,53 +8,82 @@ object GlyphArchiveOriginTrace {
     )
 
     fun report(boot: ByteArray): String = buildString {
-        appendLine("glyph metadata archive-origin trace v2")
-        appendLine("2.9 result carried forward: file 0x1459BC is the only direct caller of metadata parser 0x1FA800. Its a2 comes from helper 0x1DDDE4; sibling helpers 0x1DDD9C and 0x1DDE1C are used in the same setup path.")
-        appendLine("goal: classify those three helpers, enumerate their direct callers, and expose the exact 0x1458D8 setup function around every call so a file/member/resource identifier can be recovered.")
-        appendLine("No writes are enabled.")
+        appendLine("glyph metadata container-writer trace v3")
+        appendLine("3.1 decisive result: helper B bounds-checks index against container+0x14, then returns *(container+0x00) + *(u32*)(*(container+0x04) + index*4). Therefore index=2 is the third offset-table sub-block in the container built from s0+0x384.")
+        appendLine("helper C independently returns *(container+0x08) + index*0x20, confirming a parallel 0x20-byte entry-descriptor table.")
+        appendLine("goal: recover the container header parser and every direct BOOT access that writes or reads owner+0x380/+0x384. No writes are enabled.")
         appendLine()
 
-        val targets = listOf(
-            Target("resource helper A", 0x1DDD9C, 0x1DDE1C),
-            Target("resource helper B / parser input producer", 0x1DDDE4, 0x1DDE64),
-            Target("resource helper C", 0x1DDE1C, 0x1DDE9C),
-            Target("glyph metadata parser", 0x1FA780, 0x1FA800),
-            Target("setup function", 0x145858, 0x1458D8),
-        )
-
-        for (t in targets) {
-            appendLine("=== ${t.name} ===")
-            appendLine("entry va=${hex(t.va)} file=${hex(t.file)}")
-            val backwardPrologue = inferFunctionStart(boot, t.file)
-            val fe = inferFunctionExtent(boot, t.file)
-            appendLine("backward prologue candidate=${backwardPrologue?.let(::hex) ?: "none"}")
-            appendLine("exact entry extent ${hex(t.file)}..${hex(fe)}")
-            dump(boot, t.file, fe, setOf(t.file))
-            val callers = findJalCallers(boot, t.va)
-            appendLine("direct callers=${callers.size}")
-            appendLine("caller files=" + callers.take(64).joinToString(" ") { hex(it) })
-            if (callers.size > 64) appendLine("  ... ${callers.size - 64} more")
-            appendLine()
-        }
-
-        appendLine("=== focused setup function 0x1458D8 ===")
-        appendLine("This is the sole static bridge into the glyph metadata parser. Calls at 0x14592C/0x14593C/0x14598C/0x1459A4 feed values that ultimately reach 0x1459BC.")
-        dump(boot, 0x1458D8, 0x145B20, setOf(0x14592C,0x14593C,0x14598C,0x1459A4,0x1459BC))
+        appendLine("=== raw container parser core va=0x1DDBA0 / file=0x1DDC20 ===")
+        appendLine("Fixed range ends immediately before wrapper helper A at file 0x1DDE1C.")
+        dump(boot, 0x1DDC20, 0x1DDE18, setOf(0x1DDC20))
         appendLine()
 
-        appendLine("=== immediate/string-address candidates near setup ===")
-        scanAddressMaterialization(boot, 0x145780, 0x145B80)
+        appendLine("=== owner initializer va=0x145784 / file=0x145804 ===")
+        appendLine("This runs on the state-0 path before setup 0x145858 runs on the state-1 path.")
+        dump(boot, 0x145804, 0x1458D4, setOf(0x145804))
         appendLine()
 
-        appendLine("=== parent callers of setup va=0x145858 ===")
-        findJalCallers(boot, 0x145858).take(24).forEachIndexed { i, c ->
-            appendLine("  #${i + 1} file=${hex(c)} va=${hex(c - 0x80)}")
-            dump(boot, maxOf(0, c - 0x90), minOf(boot.size - 4, c + 0x90), setOf(c))
-        }
+        appendLine("=== all direct owner field accesses at +0x380/+0x384 ===")
+        scanOwnerResourceFields(boot)
         appendLine()
 
-        appendLine("Decision rule: success requires a stable resource identifier (filename, PAA member/index, resource type, or loader object) feeding helper 0x1DDDE4 and then parser 0x1FA800. Once identified, parse that metadata directly from ISO and validate descriptors for 0/A/a against known atlas anchors before kana/kanji.")
+        appendLine("=== global font-owner address materialization (VA 0x9280) ===")
+        scanGlobalOwnerMaterialization(boot)
+        appendLine()
+
+        appendLine("=== callers of owner initializer va=0x145784 ===")
+        appendLine(findJalCallers(boot, 0x145784).joinToString(" ") { "file=${hex(it)}" })
+        appendLine("=== callers of resource-load kickoff va=0x1CFE60 ===")
+        appendLine(findJalCallers(boot, 0x1CFE60).joinToString(" ") { "file=${hex(it)}" })
+        appendLine()
+
+        appendLine("Decision rule: identify the exact store into owner+0x384 and its source pointer/resource ID. Then parse that source container directly and extract sub-block index 2 for glyph descriptor validation against 0/A/a.")
     }.trimEnd()
+
+    private fun StringBuilder.scanOwnerResourceFields(data: ByteArray) {
+        val hits = mutableListOf<Int>()
+        var p = 0
+        while (p + 3 < data.size) {
+            val w = u32(data, p)
+            val op = (w ushr 26) and 0x3f
+            val simm = (w and 0xffff).toShort().toInt()
+            if (simm in setOf(0x380, 0x384) && op in setOf(0x20,0x21,0x23,0x24,0x25,0x28,0x29,0x2b)) hits += p
+            p += 4
+        }
+        appendLine("direct field access count=${hits.size}")
+        hits.forEachIndexed { i, off ->
+            val w = u32(data, off)
+            val op = (w ushr 26) and 0x3f
+            val kind = if (op in setOf(0x28,0x29,0x2b)) "WRITE" else "READ"
+            appendLine("  #${i+1} $kind file=${hex(off)} va=${hex(off-0x80)}  ${decode(w,off)}")
+            dump(data, maxOf(0,off-0x50), minOf(data.size-4,off+0x50), setOf(off))
+        }
+    }
+
+    private fun StringBuilder.scanGlobalOwnerMaterialization(data: ByteArray) {
+        val hits = mutableListOf<Int>()
+        var p = 0
+        while (p + 7 < data.size) {
+            val w = u32(data,p)
+            val op = (w ushr 26) and 0x3f
+            val rt = (w ushr 16) and 31
+            if (op == 0x0f && (w and 0xffff) == 0x0001) {
+                val n = u32(data,p+4)
+                val nop = (n ushr 26) and 0x3f
+                val nrs = (n ushr 21) and 31
+                val nrt = (n ushr 16) and 31
+                val simm = (n and 0xffff).toShort().toInt()
+                if (nop in setOf(0x08,0x09) && nrs == rt && nrt == rt && 0x10000 + simm == 0x9280) hits += p
+            }
+            p += 4
+        }
+        appendLine("materialization count=${hits.size}")
+        hits.forEachIndexed { i, off ->
+            appendLine("  #${i+1} file=${hex(off)} va=${hex(off-0x80)}")
+            dump(data,maxOf(0,off-0x50),minOf(data.size-4,off+0x70),setOf(off,off+4))
+        }
+    }
 
     private data class Target(val name: String, val va: Int, val file: Int)
 
