@@ -1,0 +1,66 @@
+name: Build Korean patcher fast
+
+on:
+  push:
+    branches: ["korean-patch-poc"]
+    paths:
+      - "patcher/**"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/patcher-fast.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "patcher/**"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/patcher-fast.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patcher-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-patcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Build standalone patcher only
+        run: gradle --no-daemon --stacktrace :patcher:assembleDebug
+
+      - name: Upload Korean patcher APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZillKoreanPatcher-debug
+          path: patcher/build/outputs/apk/debug/patcher-debug.apk
+          if-no-files-found: error
+          retention-days: 14

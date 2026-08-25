@@ -1,0 +1,72 @@
+name: Korean Font Patch Analysis
+
+on:
+  push:
+    branches:
+      - korean-patch-poc
+  workflow_dispatch:
+
+jobs:
+  analyze-font-delta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream Zill toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: HK47196/zill
+          path: upstream-zill
+          fetch-depth: 1
+
+      - name: Analyze frozen zillfont XOR delta
+        run: |
+          python3 korean_patch/poc/analyze_font_zpatch.py \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --json font-zpatch-analysis.json
+          cat font-zpatch-analysis.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test metrics-order to atlas-cell hypothesis
+        run: |
+          python3 korean_patch/poc/analyze_metric_order_mapping.py \
+            upstream-zill/release/font/metrics.toml \
+            upstream-zill/release/font/font-zillfont.zpatch \
+            --json metric-order-mapping.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### metrics order / 16x16 atlas mapping diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metric-order-mapping.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test OpenType cmap to atlas-cell constant-offset hypothesis
+        run: |
+          python3 korean_patch/poc/analyze_otf_cmap_mapping.py \
+            upstream-zill/release/font/fs-tahoma-8px.otf \
+            --json otf-cmap-mapping.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### OTF cmap / physical atlas diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat otf-cmap-mapping.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test 15x16 metric-slot geometry against device anchors
+        run: |
+          python3 korean_patch/poc/analyze_metric_slot_geometry.py \
+            upstream-zill/release/font/metrics.toml \
+            --json metric-slot-geometry.json
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '### 15x16 metric-slot geometry diagnostic' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metric-slot-geometry.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: zillfont-zpatch-analysis
+          path: |
+            font-zpatch-analysis.json
+            metric-order-mapping.json
+            otf-cmap-mapping.json
+            metric-slot-geometry.json
