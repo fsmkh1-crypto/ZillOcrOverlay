@@ -98,6 +98,15 @@ public final class AutomationPrefs {
         appendLog(c, status);
     }
 
+    public static void defer(Context c, String reason, int minutes) {
+        long when = System.currentTimeMillis() + Math.max(1, minutes) * 60_000L;
+        get(c).edit()
+                .putLong(KEY_NEXT_DUE, when)
+                .putString(KEY_LAST_STATUS, "보류: " + reason)
+                .apply();
+        appendLog(c, "보류: " + reason + " — " + Math.max(1, minutes) + "분 뒤 다시 확인");
+    }
+
     public static void saveInspection(Context c, boolean editor, boolean semantic, boolean ime, boolean coord, String summary) {
         get(c).edit()
                 .putBoolean(KEY_INSPECT_EDITOR, editor)
@@ -143,7 +152,7 @@ public final class AutomationPrefs {
                 e.putBoolean(KEY_ENABLED, false)
                         .putLong(KEY_NEXT_DUE, 0L)
                         .putString(KEY_LAST_STATUS, "자동 중지: " + reason);
-                appendLog(c, "자동 중지(연속 2회 실패): " + reason);
+                appendLog(c, "자동 중지(연속 2회 구조 실패): " + reason);
             } else {
                 e.putLong(KEY_NEXT_DUE, System.currentTimeMillis() + intervalMinutes(c) * 60_000L)
                         .putString(KEY_LAST_STATUS, "자동 전송 실패: " + reason);
