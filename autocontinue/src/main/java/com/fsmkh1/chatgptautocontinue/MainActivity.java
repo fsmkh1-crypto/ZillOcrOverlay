@@ -52,8 +52,8 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
         scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        root.addView(text("ChatGPT 작업 지속기 v2.0", 24, true));
-        TextView sub = text("먼저 현재 ChatGPT 화면을 검사하고, 실제 성공한 전송 방식 하나만 저장해서 반복합니다.", 14, false);
+        root.addView(text("ChatGPT 작업 지속기 v2.1", 24, true));
+        TextView sub = text("현재 ChatGPT 화면을 검사하고 실제 성공한 전송 방식 하나만 저장해서 반복합니다.", 14, false);
         sub.setPadding(0, dp(6), 0, dp(18));
         root.addView(sub);
 
@@ -89,12 +89,15 @@ public class MainActivity extends Activity {
         intervalEdit.setTextSize(18);
         root.addView(intervalEdit, matchWrap());
 
-        Button saveBasic = button("내용 저장");
-        saveBasic.setOnClickListener(v -> saveBasicValues());
+        Button saveBasic = button("내용/간격 저장");
+        saveBasic.setOnClickListener(v -> {
+            saveBasicValues(true);
+            refreshStatus();
+        });
         root.addView(saveBasic, matchWrapWithTop(10));
 
         root.addView(section("3. ChatGPT 화면 검사"));
-        TextView inspectHelp = text("이 버튼을 누르면 ChatGPT를 열어 입력창과 사용 가능한 전송 방식을 확인한 뒤 자동으로 이 화면으로 돌아옵니다. 메시지는 보내지 않습니다.", 13, false);
+        TextView inspectHelp = text("메시지를 보내지 않고 입력창과 사용 가능한 전송 방식을 검사합니다. 검사 후 ChatGPT 화면에 그대로 머무르므로 결과는 작업 지속기로 직접 돌아와 확인하세요.", 13, false);
         root.addView(inspectHelp);
         Button inspect = button("화면 검사 시작");
         inspect.setOnClickListener(v -> {
@@ -108,7 +111,7 @@ public class MainActivity extends Activity {
         root.addView(inspectStatus);
 
         root.addView(section("4. 전송 방식 시험"));
-        TextView testHelp = text("아래 시험은 실제로 현재/마지막 ChatGPT 대화에 문구를 1회 보냅니다. 화면 검사에서 O로 나온 방식부터 시험하세요. 성공한 방식 하나가 자동화 방식으로 고정됩니다.", 13, false);
+        TextView testHelp = text("아래 시험은 실제로 현재/마지막 ChatGPT 대화에 문구를 1회 보냅니다. 성공 후에도 ChatGPT 화면에 그대로 머뭅니다. 화면 검사에서 O로 나온 방식부터 시험하세요.", 13, false);
         root.addView(testHelp);
 
         Button testSemantic = button("A. 보내기 버튼 방식 시험");
@@ -138,7 +141,7 @@ public class MainActivity extends Activity {
 
         root.addView(section("5. 자동 진행"));
         enabledSwitch = new Switch(this);
-        enabledSwitch.setText("15분마다 자동 진행 ON / OFF");
+        enabledSwitch.setText("설정한 간격으로 자동 진행 ON / OFF");
         enabledSwitch.setTextSize(18);
         root.addView(enabledSwitch, matchWrap());
 
@@ -163,7 +166,7 @@ public class MainActivity extends Activity {
         root.addView(runStatus);
 
         TextView notice = text(
-                "v2 핵심 변경\n• 접근성 이벤트가 자동화를 재호출하지 않음 — 중복 실행 제거\n• 실패해도 1분마다 무한 재시도하지 않음\n• 입력창에 기존 글이 있으면 절대 덮어쓰지 않음\n• 자동화는 시험에 성공한 전송 방식 하나만 사용\n• 임의로 다른 방식으로 폴백하지 않음\n• 실제 응답 생성 또는 새 사용자 메시지 증가를 확인해야 성공 처리\n• 자동 전송이 연속 2회 실패하면 자동으로 OFF\n• 자동 실행 때문에 ChatGPT를 열었으면 끝난 뒤 이전 화면으로 복귀 시도\n• 로그에는 ChatGPT 대화 내용 자체를 저장하지 않음",
+                "v2.1 동작 원칙\n• 간격 변경은 전송 방식 검증을 초기화하지 않음\n• 자동 진행 ON/OFF 스위치를 저장 과정에서 덮어쓰지 않음\n• 접근성 이벤트가 자동화를 재호출하지 않음\n• 입력창에 기존 글이 있으면 절대 덮어쓰지 않음\n• 시험에 성공한 전송 방식 하나만 사용\n• 다른 전송 방식으로 임의 폴백하지 않음\n• 실제 응답 생성 또는 새 사용자 메시지 증가를 확인해야 성공 처리\n• 응답 생성 중/사용자 입력 중은 실패가 아니라 보류\n• 자동 실행 후 BACK을 누르거나 다른 화면으로 자동 이동하지 않음\n• 자동 전송이 연속 2회 구조적으로 실패하면 자동 OFF\n• 로그에는 ChatGPT 대화 내용 자체를 저장하지 않음",
                 13, false);
         notice.setPadding(dp(12), dp(12), dp(12), dp(12));
         root.addView(notice, matchWrap());
@@ -184,8 +187,9 @@ public class MainActivity extends Activity {
     }
 
     private void applyAutomationSetting() {
-        saveBasicValues(false);
+        // 중요: 저장/refresh 전에 사용자가 방금 선택한 스위치 값을 먼저 잡아둔다.
         boolean want = enabledSwitch.isChecked();
+        saveBasicValues(false);
         if (want && !AutomationPrefs.setupPassed(this)) {
             enabledSwitch.setChecked(false);
             Toast.makeText(this, "전송 방식 시험을 먼저 통과해야 자동 진행을 켤 수 있습니다", Toast.LENGTH_LONG).show();
@@ -203,10 +207,6 @@ public class MainActivity extends Activity {
         refreshStatus();
     }
 
-    private void saveBasicValues() {
-        saveBasicValues(true);
-    }
-
     private void saveBasicValues(boolean toast) {
         int interval = AutomationPrefs.DEFAULT_INTERVAL_MINUTES;
         try { interval = Integer.parseInt(intervalEdit.getText().toString().trim()); } catch (Exception ignored) {}
@@ -216,8 +216,8 @@ public class MainActivity extends Activity {
         AutomationPrefs.saveBasic(this, interval, msg);
         intervalEdit.setText(String.valueOf(interval));
         messageEdit.setText(msg);
+        updateAutoLabel(interval);
         if (toast) Toast.makeText(this, "저장했습니다", Toast.LENGTH_SHORT).show();
-        refreshStatus();
     }
 
     private void refreshStatus() {
@@ -225,11 +225,14 @@ public class MainActivity extends Activity {
         serviceStatus.setText(serviceOn ? "접근성 서비스: 켜짐" : "접근성 서비스: 꺼짐 — 먼저 켜주세요");
 
         SharedPreferences p = AutomationPrefs.get(this);
+        int interval = p.getInt(AutomationPrefs.KEY_INTERVAL, AutomationPrefs.DEFAULT_INTERVAL_MINUTES);
+        updateAutoLabel(interval);
+
         String inspect = p.getString(AutomationPrefs.KEY_INSPECT_SUMMARY, "아직 검사하지 않음");
         inspectStatus.setText("검사 결과: " + inspect);
 
-        boolean passed = p.getBoolean(AutomationPrefs.KEY_SETUP_PASSED, false);
-        String method = p.getString(AutomationPrefs.KEY_VERIFIED_METHOD, AutomationPrefs.METHOD_NONE);
+        boolean passed = AutomationPrefs.setupPassed(this);
+        String method = AutomationPrefs.verifiedMethod(this);
         verificationStatus.setText(passed
                 ? "검증 완료: " + AutomationPrefs.methodLabel(method)
                 : "검증 미완료: 자동 진행을 켤 수 없음");
@@ -239,11 +242,16 @@ public class MainActivity extends Activity {
         long sent = p.getLong(AutomationPrefs.KEY_LAST_SENT, 0L);
         long due = p.getLong(AutomationPrefs.KEY_NEXT_DUE, 0L);
         int failures = p.getInt(AutomationPrefs.KEY_FAIL_COUNT, 0);
-        runStatus.setText("최근 상태: " + last
+        runStatus.setText("현재 간격: " + interval + "분"
+                + "\n최근 상태: " + last
                 + "\n마지막 성공: " + AutomationPrefs.formatTime(sent)
                 + "\n다음 예정: " + AutomationPrefs.formatTime(due)
                 + "\n연속 실패: " + failures + "/2");
         logView.setText(p.getString(AutomationPrefs.KEY_LOG, ""));
+    }
+
+    private void updateAutoLabel(int interval) {
+        if (enabledSwitch != null) enabledSwitch.setText(interval + "분 간격 자동 진행 ON / OFF");
     }
 
     private void openAutostartSettings() {
