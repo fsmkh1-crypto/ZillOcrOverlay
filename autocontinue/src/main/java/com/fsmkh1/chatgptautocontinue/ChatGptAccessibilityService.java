@@ -23,6 +23,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     private static final long TICK_MS = 20_000L;
     private static final long AFTER_OPEN_DELAY_MS = 2_500L;
     private static final long AFTER_TEXT_DELAY_MS = 900L;
+    private static final long VERIFY_DELAY_MS = 650L;
+    private static final int VERIFY_ATTEMPTS = 5;
 
     private static volatile ChatGptAccessibilityService instance;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -110,15 +112,20 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null || !CHATGPT_PACKAGE.contentEquals(root.getPackageName())) {
                 if (root != null) root.recycle();
-                AutomationPrefs.retrySoon(this, "ChatGPT 화면을 확인하지 못함");
-                actionInProgress = false;
+                fail("ChatGPT 화면을 확인하지 못함");
                 return;
             }
 
             if (isGenerating(root)) {
                 root.recycle();
-                AutomationPrefs.retrySoon(this, "ChatGPT가 아직 응답 생성 중임");
-                actionInProgress = false;
+                fail("ChatGPT가 아직 응답 생성 중임");
+                return;
+            }
+
+            String guard = AutomationPrefs.conversationGuard(this);
+            if (!guard.isEmpty() && !headerContainsGuard(root, guard)) {
+                root.recycle();
+                fail("대화방 키워드가 화면 상단에서 확인되지 않음");
                 return;
             }
 
@@ -126,8 +133,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             if (editor == null) {
                 logUiDiagnostic(root, "입력창 탐지 실패");
                 root.recycle();
-                AutomationPrefs.retrySoon(this, "대화 입력창을 찾지 못함");
-                actionInProgress = false;
+                fail("대화 입력창을 찾지 못함");
                 return;
             }
 
@@ -142,29 +148,35 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             editor.recycle();
 
             if (!set) {
-                AutomationPrefs.retrySoon(this, "입력창에 문구를 넣지 못함");
-                actionInProgress = false;
+                fail("입력창에 문구를 넣지 못함");
                 return;
             }
             Rect rememberedBounds = new Rect(editorBounds);
             handler.postDelayed(() -> clickSend(message, rememberedBounds), AFTER_TEXT_DELAY_MS);
         } catch (Throwable t) {
-            AutomationPrefs.retrySoon(this, "자동화 오류: " + t.getClass().getSimpleName());
-            actionInProgress = false;
+            fail("자동화 오류: " + t.getClass().getSimpleName());
         }
     }
 
     private void clickSend(String expectedMessage, Rect rememberedEditorBounds) {
+        boolean asyncVerificationStarted = false;
         try {
             AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null || !CHATGPT_PACKAGE.contentEquals(root.getPackageName())) {
                 if (root != null) root.recycle();
-                AutomationPrefs.retrySoon(this, "전송 직전 ChatGPT 화면이 바뀜");
+                fail("전송 직전 ChatGPT 화면이 바뀜");
                 return;
             }
             if (isGenerating(root)) {
                 root.recycle();
-                AutomationPrefs.retrySoon(this, "전송 직전 응답 생성이 시작됨");
+                fail("전송 직전 응답 생성이 시작됨");
+                return;
+            }
+
+            String guard = AutomationPrefs.conversationGuard(this);
+            if (!guard.isEmpty() && !headerContainsGuard(root, guard)) {
+                root.recycle();
+                fail("전송 직전 대화방 키워드 확인 실패");
                 return;
             }
 
@@ -197,7 +209,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             if (!matches) {
                 logUiDiagnostic(root, "전송 직전 입력내용 확인 실패");
                 root.recycle();
-                AutomationPrefs.retrySoon(this, "전송 직전 입력 내용을 확인하지 못함");
+                fail("전송 직전 입력 내용을 확인하지 못함");
                 return;
             }
 
@@ -206,25 +218,28 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 boolean clicked = performClickUpTree(send);
                 send.recycle();
                 root.recycle();
-                if (clicked) {
-                    AutomationPrefs.markSent(this);
-                } else {
-                    AutomationPrefs.retrySoon(this, "보내기 버튼 클릭 실패");
+                if (!clicked) {
+                    fail("보내기 버튼 클릭 실패");
+                    return;
                 }
+                asyncVerificationStarted = true;
+                Rect verifyBounds = new Rect(composerBounds);
+                handler.postDelayed(() -> verifySendOutcome(expectedMessage, verifyBounds, 0, "버튼"), VERIFY_DELAY_MS);
                 return;
             }
 
-            logUiDiagnostic(root, "보내기 버튼 라벨 없음 - 좌표 폴백");
+            logUiDiagnostic(root, "라벨된 보내기 버튼 없음 - 좌표 폴백");
             root.recycle();
             if (!composerBounds.isEmpty() && dispatchSendGesture(rootBounds, composerBounds, expectedMessage)) {
-                AutomationPrefs.appendLog(this, "접근성 버튼이 없어 우측 전송 영역 탭을 시도함");
+                asyncVerificationStarted = true;
+                AutomationPrefs.appendLog(this, "좌표 폴백 탭 시도 — 성공 여부 검증 대기");
             } else {
-                AutomationPrefs.retrySoon(this, "보내기 버튼/전송 영역을 찾지 못함");
+                fail("보내기 버튼/전송 영역을 찾지 못함");
             }
         } catch (Throwable t) {
-            AutomationPrefs.retrySoon(this, "전송 오류: " + t.getClass().getSimpleName());
+            fail("전송 오류: " + t.getClass().getSimpleName());
         } finally {
-            actionInProgress = false;
+            if (!asyncVerificationStarted && actionInProgress) actionInProgress = false;
         }
     }
 
@@ -243,37 +258,109 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
                 .build();
+        Rect verifyBounds = new Rect(composerBounds);
         return dispatchGesture(gesture, new GestureResultCallback() {
             @Override public void onCompleted(GestureDescription gestureDescription) {
                 super.onCompleted(gestureDescription);
-                handler.postDelayed(() -> verifyGestureSend(expectedMessage), 900L);
+                handler.postDelayed(() -> verifySendOutcome(expectedMessage, verifyBounds, 0, "좌표"), VERIFY_DELAY_MS);
             }
 
             @Override public void onCancelled(GestureDescription gestureDescription) {
                 super.onCancelled(gestureDescription);
-                AutomationPrefs.retrySoon(ChatGptAccessibilityService.this, "전송 영역 탭이 취소됨");
+                fail("전송 영역 탭이 취소됨");
             }
         }, null);
     }
 
-    private void verifyGestureSend(String expectedMessage) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || !CHATGPT_PACKAGE.contentEquals(root.getPackageName())) {
-            if (root != null) root.recycle();
-            AutomationPrefs.markSent(this);
-            return;
+    private void verifySendOutcome(String expectedMessage, Rect oldComposerBounds, int attempt, String method) {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null || !CHATGPT_PACKAGE.contentEquals(root.getPackageName())) {
+                if (root != null) root.recycle();
+                if (attempt + 1 < VERIFY_ATTEMPTS) {
+                    handler.postDelayed(() -> verifySendOutcome(expectedMessage, oldComposerBounds, attempt + 1, method), VERIFY_DELAY_MS);
+                } else {
+                    fail("전송 후 ChatGPT 화면을 확인하지 못해 성공 처리하지 않음");
+                }
+                return;
+            }
+
+            boolean generating = isGenerating(root);
+            boolean bubble = hasSentUserMessage(root, expectedMessage, oldComposerBounds);
+            boolean composerCleared = isComposerCleared(root, expectedMessage);
+
+            if (generating || (bubble && composerCleared)) {
+                root.recycle();
+                AutomationPrefs.appendLog(this, method + " 전송 검증 성공: " + (generating ? "응답 생성 감지" : "사용자 메시지 버블 확인"));
+                AutomationPrefs.markSent(this);
+                actionInProgress = false;
+                return;
+            }
+
+            root.recycle();
+            if (attempt + 1 < VERIFY_ATTEMPTS) {
+                handler.postDelayed(() -> verifySendOutcome(expectedMessage, oldComposerBounds, attempt + 1, method), VERIFY_DELAY_MS);
+            } else {
+                fail("전송 동작 후 실제 전송 증거를 확인하지 못함");
+            }
+        } catch (Throwable t) {
+            fail("전송 검증 오류: " + t.getClass().getSimpleName());
         }
+    }
+
+    private boolean isComposerCleared(AccessibilityNodeInfo root, String expectedMessage) {
         AccessibilityNodeInfo editor = findPromptEditor(root);
-        root.recycle();
-        if (editor == null) {
-            AutomationPrefs.markSent(this);
-            return;
+        if (editor == null) return false;
+        try {
+            CharSequence current = editor.getText();
+            String value = current == null ? "" : current.toString().trim();
+            return !expectedMessage.equals(value);
+        } finally {
+            editor.recycle();
         }
-        CharSequence current = editor.getText();
-        boolean stillThere = current != null && expectedMessage.contentEquals(current.toString().trim());
-        editor.recycle();
-        if (stillThere) AutomationPrefs.retrySoon(this, "전송 영역을 눌렀지만 문구가 그대로 남아 있음");
-        else AutomationPrefs.markSent(this);
+    }
+
+    private boolean hasSentUserMessage(AccessibilityNodeInfo root, String expectedMessage, Rect oldComposerBounds) {
+        List<AccessibilityNodeInfo> nodes = flatten(root);
+        try {
+            for (AccessibilityNodeInfo n : nodes) {
+                if (!n.isVisibleToUser() || n.isEditable() || supportsSetText(n)) continue;
+                String text = safe(n.getText()).trim();
+                if (!expectedMessage.equals(text)) continue;
+                Rect b = new Rect();
+                n.getBoundsInScreen(b);
+                if (b.isEmpty()) continue;
+                if (oldComposerBounds.isEmpty()) return true;
+                if (b.bottom <= oldComposerBounds.top + dp(16)) return true;
+            }
+            return false;
+        } finally {
+            recycleList(nodes);
+        }
+    }
+
+    private boolean headerContainsGuard(AccessibilityNodeInfo root, String guard) {
+        if (guard == null || guard.trim().isEmpty()) return true;
+        String needle = guard.trim().toLowerCase(Locale.ROOT);
+        Rect rootBounds = new Rect();
+        root.getBoundsInScreen(rootBounds);
+        int headerBottom = rootBounds.isEmpty()
+                ? (int) (getResources().getDisplayMetrics().heightPixels * 0.35f)
+                : rootBounds.top + (int) (rootBounds.height() * 0.35f);
+        List<AccessibilityNodeInfo> nodes = flatten(root);
+        try {
+            for (AccessibilityNodeInfo n : nodes) {
+                if (!n.isVisibleToUser()) continue;
+                Rect b = new Rect();
+                n.getBoundsInScreen(b);
+                if (!b.isEmpty() && b.centerY() > headerBottom) continue;
+                String text = combinedText(n).toLowerCase(Locale.ROOT);
+                if (text.contains(needle)) return true;
+            }
+            return false;
+        } finally {
+            recycleList(nodes);
+        }
     }
 
     private boolean openChatGpt() {
@@ -325,7 +412,6 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         try {
             for (AccessibilityNodeInfo n : nodes) {
                 if (!n.isVisibleToUser() || !n.isEnabled()) continue;
-                int score = 0;
                 String clazz = safe(n.getClassName()).toLowerCase(Locale.ROOT);
                 String id = safe(n.getViewIdResourceName()).toLowerCase(Locale.ROOT);
                 String hint = safe(n.getHintText()).toLowerCase(Locale.ROOT);
@@ -334,19 +420,27 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 Rect b = new Rect();
                 n.getBoundsInScreen(b);
 
+                boolean textCapable = n.isEditable() || supportsSetText(n);
+                boolean lowerScreen = !b.isEmpty() && b.centerY() >= lowerLine;
+                boolean wideEnough = !b.isEmpty() && b.width() >= rootBounds.width() * 0.30f;
+                boolean semantic = id.contains("prompt") || id.contains("composer") || id.contains("input") || id.contains("message") ||
+                        hint.contains("message") || hint.contains("메시지") || hint.contains("질문") || hint.contains("chatgpt") || hint.contains("ask") ||
+                        desc.contains("message") || desc.contains("메시지") || desc.contains("prompt") ||
+                        clazz.contains("edittext") || clazz.contains("textfield");
+
+                if (!textCapable || !lowerScreen || !(semantic || wideEnough)) continue;
+
+                int score = 0;
                 if (n.isEditable()) score += 180;
                 if (supportsSetText(n)) score += 150;
                 if (clazz.contains("edittext") || clazz.contains("textfield")) score += 110;
                 if (n.isFocused()) score += 45;
                 if (n.isFocusable()) score += 20;
-                if (id.contains("prompt") || id.contains("composer") || id.contains("input") || id.contains("message")) score += 45;
-                if (hint.contains("message") || hint.contains("메시지") || hint.contains("질문") || hint.contains("chatgpt") || hint.contains("ask")) score += 45;
-                if (desc.contains("message") || desc.contains("메시지") || desc.contains("prompt")) score += 30;
-                if (!b.isEmpty() && b.centerY() >= lowerLine) score += 55;
-                if (!b.isEmpty() && b.width() >= rootBounds.width() * 0.35f) score += 25;
-                if (text.length() > 1200) score -= 100;
+                if (semantic) score += 80;
+                if (wideEnough) score += 45;
+                if (text.length() > 1200) score -= 150;
 
-                if (score > bestScore && score >= 145) {
+                if (score > bestScore && score >= 230) {
                     if (best != null) best.recycle();
                     best = AccessibilityNodeInfo.obtain(n);
                     bestScore = score;
@@ -359,9 +453,11 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     }
 
     private AccessibilityNodeInfo findMessageNodeNear(AccessibilityNodeInfo root, String expected, Rect rememberedBounds) {
+        if (rememberedBounds.isEmpty()) return null;
         List<AccessibilityNodeInfo> nodes = flatten(root);
         AccessibilityNodeInfo best = null;
         int bestScore = Integer.MIN_VALUE;
+        int maxDy = Math.max(dp(96), rememberedBounds.height() * 2);
         try {
             for (AccessibilityNodeInfo n : nodes) {
                 if (!n.isVisibleToUser() || !n.isEnabled()) continue;
@@ -369,16 +465,14 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 if (!expected.equals(text)) continue;
                 Rect b = new Rect();
                 n.getBoundsInScreen(b);
+                if (b.isEmpty()) continue;
+                int dy = Math.abs(b.centerY() - rememberedBounds.centerY());
+                if (dy > maxDy) continue;
                 int score = 100;
                 if (n.isEditable()) score += 120;
                 if (supportsSetText(n)) score += 100;
-                if (!rememberedBounds.isEmpty()) {
-                    int dy = Math.abs(b.centerY() - rememberedBounds.centerY());
-                    if (dy <= dp(28)) score += 100;
-                    else if (dy <= dp(72)) score += 50;
-                    else score -= 100;
-                }
-                if (score > bestScore && score >= 100) {
+                score += Math.max(0, 100 - dy / Math.max(1, dp(2)));
+                if (score > bestScore) {
                     if (best != null) best.recycle();
                     best = AccessibilityNodeInfo.obtain(n);
                     bestScore = score;
@@ -408,35 +502,32 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 String id = safe(n.getViewIdResourceName()).toLowerCase(Locale.ROOT);
                 Rect b = new Rect();
                 n.getBoundsInScreen(b);
-                int score = 0;
 
-                if (label.contains("send prompt") || label.contains("submit prompt")) score += 260;
-                if (label.equals("send") || label.equals("보내기") || label.equals("전송")) score += 240;
-                if (label.contains("보내기") || label.contains("전송") || label.contains("submit")) score += 190;
-                if (id.contains("send") || id.contains("submit")) score += 220;
+                boolean excluded = label.contains("voice") || label.contains("음성") || label.contains("microphone") ||
+                        label.contains("마이크") || label.contains("camera") || label.contains("카메라") ||
+                        label.contains("attach") || label.contains("첨부") || label.contains("photo") || label.contains("사진");
+                if (excluded) continue;
+
+                boolean semanticSend = label.contains("send prompt") || label.contains("submit prompt") ||
+                        label.equals("send") || label.equals("보내기") || label.equals("전송") ||
+                        label.contains("보내기") || label.contains("전송") || label.contains("submit") ||
+                        id.contains("send") || id.contains("submit");
+                if (!semanticSend) continue;
+
+                int score = 250;
+                if (id.contains("send") || id.contains("submit")) score += 120;
                 if (n.isClickable()) score += 70;
                 else if (hasClickableParent(n, 3)) score += 45;
 
-                boolean nearComposer = false;
                 if (!composerBounds.isEmpty() && !b.isEmpty()) {
                     int maxDy = Math.max(dp(72), composerBounds.height() * 2);
                     int dy = Math.abs(b.centerY() - composerBounds.centerY());
-                    if (dy <= maxDy && b.centerX() >= composerBounds.centerX()) {
-                        nearComposer = true;
-                        score += 110;
-                        if (!rootBounds.isEmpty() && b.centerX() >= rootBounds.left + rootBounds.width() * 0.72f) score += 70;
-                        score += Math.min(60, Math.max(0, (b.centerX() - composerBounds.centerX()) / Math.max(1, dp(3))));
-                    }
+                    if (dy <= maxDy && b.centerX() >= composerBounds.centerX()) score += 120;
+                    else score -= 80;
+                    if (!rootBounds.isEmpty() && b.centerX() >= rootBounds.left + rootBounds.width() * 0.72f) score += 60;
                 }
 
-                if (label.contains("voice") || label.contains("음성") || label.contains("microphone") ||
-                        label.contains("마이크") || label.contains("camera") || label.contains("카메라") ||
-                        label.contains("attach") || label.contains("첨부") || label.contains("photo") || label.contains("사진")) {
-                    score -= 180;
-                }
-
-                if ((label.contains("send") || label.contains("보내기") || label.contains("전송") || id.contains("send") || id.contains("submit") || nearComposer)
-                        && score > bestScore && score >= 150) {
+                if (score > bestScore) {
                     if (best != null) best.recycle();
                     best = AccessibilityNodeInfo.obtain(n);
                     bestScore = score;
@@ -492,14 +583,14 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                     Rect b = new Rect();
                     n.getBoundsInScreen(b);
                     if (!rootBounds.isEmpty() && b.centerY() < lowerLine) continue;
-                    String text = combinedText(n).replace('\n', ' ').trim();
-                    boolean interesting = n.isEditable() || n.isClickable() || supportsSetText(n) || !text.isEmpty();
+                    boolean interesting = n.isEditable() || n.isClickable() || supportsSetText(n);
                     if (!interesting) continue;
-                    if (text.length() > 28) text = text.substring(0, 28) + "…";
                     if (added++ > 0) sb.append(" | ");
-                    sb.append(safe(n.getClassName())).append(" e=").append(n.isEditable() ? 1 : 0)
+                    sb.append(simpleClass(n))
+                            .append(" e=").append(n.isEditable() ? 1 : 0)
                             .append(" c=").append(n.isClickable() ? 1 : 0)
-                            .append(" t=").append(text)
+                            .append(" s=").append(supportsSetText(n) ? 1 : 0)
+                            .append(" role=").append(nodeRole(n))
                             .append(" @").append(b.left).append(',').append(b.top).append('-').append(b.right).append(',').append(b.bottom);
                     if (added >= 5) break;
                 }
@@ -508,6 +599,27 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             }
             AutomationPrefs.appendLog(this, sb.toString());
         } catch (Throwable ignored) {}
+    }
+
+    private String nodeRole(AccessibilityNodeInfo n) {
+        String text = combinedText(n).toLowerCase(Locale.ROOT);
+        String id = safe(n.getViewIdResourceName()).toLowerCase(Locale.ROOT);
+        if (text.contains("send") || text.contains("보내기") || text.contains("전송") || id.contains("send") || id.contains("submit")) return "send";
+        if (text.contains("voice") || text.contains("microphone") || text.contains("음성") || text.contains("마이크")) return "voice";
+        if (text.contains("attach") || text.contains("첨부") || text.contains("photo") || text.contains("사진")) return "attach";
+        if (n.isEditable() || supportsSetText(n)) return "editor";
+        return "other";
+    }
+
+    private String simpleClass(AccessibilityNodeInfo n) {
+        String clazz = safe(n.getClassName());
+        int dot = clazz.lastIndexOf('.');
+        return dot >= 0 ? clazz.substring(dot + 1) : clazz;
+    }
+
+    private void fail(String reason) {
+        AutomationPrefs.retrySoon(this, reason);
+        actionInProgress = false;
     }
 
     private List<AccessibilityNodeInfo> flatten(AccessibilityNodeInfo root) {
