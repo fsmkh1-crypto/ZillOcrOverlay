@@ -49,7 +49,7 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
         scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView title = text("ChatGPT 작업 지속기", 24, true);
+        TextView title = text("ChatGPT 작업 지속기 v1.1", 24, true);
         root.addView(title);
         TextView sub = text("15분마다 ChatGPT에 ‘수동 시작해’를 보내는 개인용 자동화", 14, false);
         sub.setPadding(0, dp(6), 0, dp(18));
@@ -108,7 +108,7 @@ public class MainActivity extends Activity {
         root.addView(runStatus);
 
         TextView notice = text(
-                "안전장치\n• ChatGPT 앱에서만 동작\n• 응답 생성 중이면 전송하지 않고 1분 후 재시도\n• 화면 잠금 상태면 대기\n• 입력창 내용이 자동 문구와 다르면 전송 취소\n• ChatGPT UI가 바뀌어 입력창/보내기 버튼을 못 찾으면 전송하지 않음\n\n주의: 현재 열려 있거나 마지막으로 열렸던 ChatGPT 대화를 대상으로 합니다. 처음에는 원하는 대화방을 열어 둔 상태에서 테스트하세요.",
+                "안전장치\n• ChatGPT 앱에서만 동작\n• 응답 생성 중이면 전송하지 않고 1분 후 재시도\n• 화면 잠금 상태면 대기\n• 입력된 자동 문구를 확인한 뒤에만 전송\n• 보내기 버튼이 접근성 트리에 없으면 입력창 오른쪽 전송 영역을 탭하는 폴백 사용\n• 실패 시 하단 UI 구조를 최근 로그에 남겨 다음 수정에 활용\n\n주의: 현재 열려 있거나 마지막으로 열렸던 ChatGPT 대화를 대상으로 합니다. 처음에는 원하는 대화방을 열어 둔 상태에서 테스트하세요.",
                 14, false);
         notice.setPadding(dp(14), dp(14), dp(14), dp(14));
         root.addView(notice, matchWrap());
