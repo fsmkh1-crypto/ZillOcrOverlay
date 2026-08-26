@@ -39,12 +39,12 @@ jobs:
         run: gradle --no-daemon --stacktrace :autocontinue:assembleDebug
 
       - name: Rename APK
-        run: cp autocontinue/build/outputs/apk/debug/autocontinue-debug.apk ChatGPT-Auto-Continue-v1.2.apk
+        run: cp autocontinue/build/outputs/apk/debug/autocontinue-debug.apk ChatGPT-Auto-Continue-v2.0.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGPT-Auto-Continue-v1.2
-          path: ChatGPT-Auto-Continue-v1.2.apk
+          name: ChatGPT-Auto-Continue-v2.0
+          path: ChatGPT-Auto-Continue-v2.0.apk
           if-no-files-found: error
           retention-days: 14
