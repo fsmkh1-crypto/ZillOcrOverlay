@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ZillOcrOverlay"
-include(":app")
+rootProject.name = "ChatGPTAutoContinue"
+include(":autocontinue")
