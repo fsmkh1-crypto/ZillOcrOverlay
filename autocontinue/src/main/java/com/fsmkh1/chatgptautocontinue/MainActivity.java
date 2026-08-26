@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
@@ -24,6 +25,7 @@ public class MainActivity extends Activity {
     private Switch enabledSwitch;
     private EditText intervalEdit;
     private EditText messageEdit;
+    private EditText conversationGuardEdit;
     private TextView serviceStatus;
     private TextView runStatus;
     private TextView logView;
@@ -49,9 +51,9 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
         scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView title = text("ChatGPT 작업 지속기 v1.1", 24, true);
+        TextView title = text("ChatGPT 작업 지속기 v1.2", 24, true);
         root.addView(title);
-        TextView sub = text("15분마다 ChatGPT에 ‘수동 시작해’를 보내는 개인용 자동화", 14, false);
+        TextView sub = text("ChatGPT에 주기적으로 지정 문구를 보내는 개인용 자동화", 14, false);
         sub.setPadding(0, dp(6), 0, dp(18));
         root.addView(sub);
 
@@ -67,6 +69,16 @@ public class MainActivity extends Activity {
         messageEdit.setTextSize(18);
         messageEdit.setHint(AutomationPrefs.DEFAULT_MESSAGE);
         root.addView(messageEdit, matchWrap());
+
+        root.addView(label("대화방 제목/키워드 (권장)"));
+        conversationGuardEdit = new EditText(this);
+        conversationGuardEdit.setSingleLine(true);
+        conversationGuardEdit.setTextSize(16);
+        conversationGuardEdit.setHint("예: APK 자동화, 한글패치 작업");
+        root.addView(conversationGuardEdit, matchWrap());
+        TextView guardHelp = text("입력하면 화면 상단에서 이 키워드가 확인될 때만 전송합니다. 잘못된 대화방 전송 방지용입니다.", 13, false);
+        guardHelp.setPadding(0, dp(4), 0, 0);
+        root.addView(guardHelp);
 
         root.addView(label("간격(분)"));
         intervalEdit = new EditText(this);
@@ -86,6 +98,10 @@ public class MainActivity extends Activity {
         Button battery = button("2. 배터리 최적화 설정 열기");
         battery.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)));
         root.addView(battery, matchWrapWithTop(10));
+
+        Button autostart = button("3. 포코/샤오미 자동 시작 설정");
+        autostart.setOnClickListener(v -> openAutostartSettings());
+        root.addView(autostart, matchWrapWithTop(10));
 
         Button chatgpt = button("ChatGPT 열기");
         chatgpt.setOnClickListener(v -> openChatGpt());
@@ -108,7 +124,7 @@ public class MainActivity extends Activity {
         root.addView(runStatus);
 
         TextView notice = text(
-                "안전장치\n• ChatGPT 앱에서만 동작\n• 응답 생성 중이면 전송하지 않고 1분 후 재시도\n• 화면 잠금 상태면 대기\n• 입력된 자동 문구를 확인한 뒤에만 전송\n• 보내기 버튼이 접근성 트리에 없으면 입력창 오른쪽 전송 영역을 탭하는 폴백 사용\n• 실패 시 하단 UI 구조를 최근 로그에 남겨 다음 수정에 활용\n\n주의: 현재 열려 있거나 마지막으로 열렸던 ChatGPT 대화를 대상으로 합니다. 처음에는 원하는 대화방을 열어 둔 상태에서 테스트하세요.",
+                "v1.2 안전장치\n• ChatGPT 앱에서만 동작\n• 화면 잠금/응답 생성 중에는 전송하지 않음\n• 입력창은 화면 하단 + 편집 가능 조건을 함께 만족해야 함\n• 라벨/resource-id가 명확한 보내기 버튼만 직접 클릭\n• 좌표 폴백은 실제 응답 생성 또는 전송된 사용자 메시지 확인 후에만 성공 처리\n• 대화방 키워드를 설정하면 상단에서 일치 확인 후에만 전송\n• UI 진단 로그에는 실제 대화 텍스트를 저장하지 않음\n\n포코/샤오미에서는 배터리 제한 해제와 자동 시작 허용을 같이 권장합니다.",
                 14, false);
         notice.setPadding(dp(14), dp(14), dp(14), dp(14));
         root.addView(notice, matchWrap());
@@ -128,6 +144,7 @@ public class MainActivity extends Activity {
         enabledSwitch.setChecked(p.getBoolean(AutomationPrefs.KEY_ENABLED, false));
         intervalEdit.setText(String.valueOf(p.getInt(AutomationPrefs.KEY_INTERVAL, AutomationPrefs.DEFAULT_INTERVAL_MINUTES)));
         messageEdit.setText(p.getString(AutomationPrefs.KEY_MESSAGE, AutomationPrefs.DEFAULT_MESSAGE));
+        conversationGuardEdit.setText(p.getString(AutomationPrefs.KEY_CONVERSATION_GUARD, ""));
         refreshStatus();
     }
 
@@ -137,20 +154,23 @@ public class MainActivity extends Activity {
         interval = Math.max(1, Math.min(240, interval));
         String msg = messageEdit.getText().toString().trim();
         if (msg.isEmpty()) msg = AutomationPrefs.DEFAULT_MESSAGE;
+        String guard = conversationGuardEdit.getText().toString().trim();
 
         AutomationPrefs.get(this).edit()
                 .putBoolean(AutomationPrefs.KEY_ENABLED, enabledSwitch.isChecked())
                 .putInt(AutomationPrefs.KEY_INTERVAL, interval)
                 .putString(AutomationPrefs.KEY_MESSAGE, msg)
+                .putString(AutomationPrefs.KEY_CONVERSATION_GUARD, guard)
                 .apply();
         if (enabledSwitch.isChecked()) {
             AutomationPrefs.scheduleFromNow(this);
-            AutomationPrefs.setStatus(this, "자동 진행 켜짐");
+            AutomationPrefs.setStatus(this, guard.isEmpty() ? "자동 진행 켜짐 — 대화방 키워드 미설정" : "자동 진행 켜짐");
         } else {
             AutomationPrefs.setStatus(this, "자동 진행 꺼짐");
         }
         intervalEdit.setText(String.valueOf(interval));
         messageEdit.setText(msg);
+        conversationGuardEdit.setText(guard);
         Toast.makeText(this, "저장했습니다", Toast.LENGTH_SHORT).show();
         refreshStatus();
     }
@@ -170,6 +190,24 @@ public class MainActivity extends Activity {
         Intent launch = getPackageManager().getLaunchIntentForPackage("com.openai.chatgpt");
         if (launch != null) startActivity(launch);
         else Toast.makeText(this, "ChatGPT 앱을 찾지 못했습니다", Toast.LENGTH_SHORT).show();
+    }
+
+    private void openAutostartSettings() {
+        try {
+            Intent intent = new Intent();
+            intent.setComponent(new ComponentName(
+                    "com.miui.securitycenter",
+                    "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+            startActivity(intent);
+        } catch (Throwable ignored) {
+            try {
+                Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(details);
+            } catch (Throwable t) {
+                Toast.makeText(this, "자동 시작 설정 화면을 열 수 없습니다", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     private static boolean isAccessibilityServiceEnabled(Context context, Class<?> serviceClass) {
