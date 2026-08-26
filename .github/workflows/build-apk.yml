@@ -48,3 +48,5 @@ jobs:
           path: ChatGPT-Auto-Continue-v2.1.apk
           if-no-files-found: error
           retention-days: 14
+
+# v2.1 build trigger
