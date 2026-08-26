@@ -1,8 +1,6 @@
-name: Build debug APK
+name: Build ChatGPT Auto Continue APK
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -13,8 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,45 +36,15 @@ jobs:
           gradle-version: "8.13"
 
       - name: Build debug APK
-        run: gradle --no-daemon --stacktrace assembleDebug
+        run: gradle --no-daemon --stacktrace :autocontinue:assembleDebug
 
-      - name: Upload debug APK
+      - name: Rename APK
+        run: cp autocontinue/build/outputs/apk/debug/autocontinue-debug.apk ChatGPT-Auto-Continue-v1.0.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ZillOcrOverlay-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Package Claude review source
-        run: |
-          rm -rf claude-review
-          mkdir -p claude-review
-          cp -R app/src claude-review/app-src
-          cp app/build.gradle.kts claude-review/app-build.gradle.kts
-          cp build.gradle.kts settings.gradle.kts gradle.properties claude-review/
-          cp .github/workflows/build-apk.yml claude-review/build-apk.yml
-          cat > claude-review/CLAUDE_REVIEW_NOTES.md <<'EOF'
-          # Zill OCR Overlay review package
-
-          Review the current branch as an Android/Kotlin code review. Classify findings as **must fix / recommended / optional**.
-
-          Please focus on issue #24 learning inbox:
-          - multi-candidate speaker/OCR inbox dedupe and hit counts
-          - no candidate Toast during gameplay
-          - typed persistent ignore keys and provider-side filtering
-          - candidate map size caps/eviction ordering
-          - approve/edit/ignore flows in LearningManagerActivity
-          - cache clearing must not erase the candidate inbox
-          - region reset/service context clearing behavior
-          - existing Room migrations/data preservation and translation behavior regressions
-          EOF
-          (cd claude-review && zip -qr ../ZillOcrOverlay-source-for-Claude.zip .)
-
-      - name: Upload Claude review source
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZillOcrOverlay-source-for-Claude
-          path: ZillOcrOverlay-source-for-Claude.zip
+          name: ChatGPT-Auto-Continue-v1.0
+          path: ChatGPT-Auto-Continue-v1.0.apk
           if-no-files-found: error
           retention-days: 14
