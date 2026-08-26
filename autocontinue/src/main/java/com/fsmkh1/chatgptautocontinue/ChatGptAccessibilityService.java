@@ -37,6 +37,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean actionInProgress = false;
     private boolean openedChatGptForOperation = false;
+    private boolean injectedOurMessage = false;
     private String currentOperation = OP_NONE;
     private int operationToken = 0;
 
@@ -61,8 +62,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        // v2: 접근성 이벤트 자체로 자동화를 시작하지 않음.
-        // 중복 실행/재시도 폭주를 막고 ticker 한 곳에서만 주기를 관리함.
+        // v2: 접근성 이벤트 자체로 자동화를 시작하지 않는다.
+        // 주기 판단은 ticker 한 곳에서만 하여 중복 실행을 막는다.
     }
 
     @Override public void onInterrupt() {
@@ -73,6 +74,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         instance = null;
         operationToken++;
         actionInProgress = false;
+        injectedOurMessage = false;
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -109,7 +111,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         if (!AutomationPrefs.enabled(this) || !AutomationPrefs.setupPassed(this)) return;
         long due = AutomationPrefs.nextDue(this);
         if (due <= 0L || System.currentTimeMillis() < due) return;
-        if (!isDeviceReady()) return; // 잠금 중에는 due를 유지하고 다음 tick에서 다시 확인
+        if (!isDeviceReady()) return; // 잠금 중에는 due를 유지하고 기다린다.
         beginOperation(OP_AUTO);
     }
 
@@ -119,8 +121,11 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             return;
         }
         if (!isDeviceReady()) {
-            AutomationPrefs.recordFailure(this, "화면이 꺼져 있거나 잠금 상태임", OP_AUTO.equals(operation));
-            if (!OP_AUTO.equals(operation)) bringControllerToFront();
+            if (OP_AUTO.equals(operation)) AutomationPrefs.defer(this, "화면이 꺼져 있거나 잠금 상태임", 2);
+            else {
+                AutomationPrefs.recordFailure(this, "화면이 꺼져 있거나 잠금 상태임", false);
+                bringControllerToFront();
+            }
             return;
         }
         if (OP_AUTO.equals(operation) && !AutomationPrefs.setupPassed(this)) {
@@ -131,6 +136,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         actionInProgress = true;
         currentOperation = operation;
         openedChatGptForOperation = false;
+        injectedOurMessage = false;
         int token = ++operationToken;
 
         AccessibilityNodeInfo root = getRootInActiveWindow();
@@ -166,7 +172,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
 
         if (isGenerating(root)) {
             root.recycle();
-            fail(token, "ChatGPT가 아직 응답 생성 중임");
+            if (OP_AUTO.equals(currentOperation)) deferAuto(token, "ChatGPT가 아직 응답 생성 중임", 2);
+            else fail(token, "ChatGPT가 아직 응답 생성 중임");
             return;
         }
 
@@ -182,7 +189,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         if (!before.isEmpty()) {
             editor.recycle();
             root.recycle();
-            fail(token, "입력창에 기존 문구가 있어 덮어쓰지 않음");
+            if (OP_AUTO.equals(currentOperation)) deferAuto(token, "입력창에 기존 문구가 있어 덮어쓰지 않음", 5);
+            else fail(token, "입력창에 기존 문구가 있어 덮어쓰지 않음");
             return;
         }
 
@@ -198,6 +206,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             fail(token, "입력창에 문구를 넣지 못함");
             return;
         }
+        injectedOurMessage = true;
 
         handler.postDelayed(() -> performSend(token, message, beforeCount), AFTER_TEXT_MS);
     }
@@ -367,6 +376,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         root.recycle();
 
         if (generating || (afterCount > beforeCount && !composerStillExact)) {
+            injectedOurMessage = false;
             boolean auto = OP_AUTO.equals(currentOperation);
             if (auto) AutomationPrefs.markAutoSuccess(this);
             else AutomationPrefs.verifyMethod(this, method);
@@ -591,11 +601,40 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         return actionInProgress && token == operationToken;
     }
 
+    private void deferAuto(int token, String reason, int minutes) {
+        if (!isCurrent(token)) return;
+        AutomationPrefs.defer(this, reason, minutes);
+        finishOperation(token, false);
+    }
+
     private void fail(int token, String reason) {
         if (!isCurrent(token)) return;
+        if (injectedOurMessage) clearInjectedMessageIfStillPresent();
         boolean auto = OP_AUTO.equals(currentOperation);
         AutomationPrefs.recordFailure(this, reason, auto);
         finishOperation(token, !auto);
+    }
+
+    private void clearInjectedMessageIfStillPresent() {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (!isChatGptRoot(root)) {
+                if (root != null) root.recycle();
+                return;
+            }
+            AccessibilityNodeInfo editor = findPromptEditor(root);
+            root.recycle();
+            if (editor == null) return;
+            CharSequence current = editor.getText();
+            String value = current == null ? "" : current.toString().trim();
+            if (AutomationPrefs.message(this).equals(value)) {
+                Bundle args = new Bundle();
+                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "");
+                editor.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+            }
+            editor.recycle();
+        } catch (Throwable ignored) {}
+        injectedOurMessage = false;
     }
 
     private void finishOperation(int token, boolean returnController) {
@@ -604,6 +643,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         actionInProgress = false;
         currentOperation = OP_NONE;
         openedChatGptForOperation = false;
+        injectedOurMessage = false;
         operationToken++;
 
         if (returnController) {
