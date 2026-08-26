@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ChatGPT 작업 지속기</string>
+    <string name="accessibility_description">ChatGPT 앱에서 지정 문구를 일정 간격으로 입력하고 전송합니다. 자동화는 사용자가 앱에서 켜고 끌 수 있습니다.</string>
+</resources>
