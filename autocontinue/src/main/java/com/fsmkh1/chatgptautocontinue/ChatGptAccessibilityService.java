@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,12 +32,12 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     private static final String OP_TEST_SEMANTIC = "test_semantic";
     private static final String OP_TEST_IME = "test_ime";
     private static final String OP_TEST_COORD = "test_coord";
+    private static final String OP_RUN_NOW = "run_now";
     private static final String OP_AUTO = "auto";
 
     private static volatile ChatGptAccessibilityService instance;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean actionInProgress = false;
-    private boolean openedChatGptForOperation = false;
     private boolean injectedOurMessage = false;
     private String currentOperation = OP_NONE;
     private int operationToken = 0;
@@ -62,8 +63,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        // v2: 접근성 이벤트 자체로 자동화를 시작하지 않는다.
-        // 주기 판단은 ticker 한 곳에서만 하여 중복 실행을 막는다.
+        // v2.1: 접근성 이벤트는 자동 실행 트리거로 사용하지 않는다.
+        // ticker 단일 경로만 사용해 중복 실행을 막는다.
     }
 
     @Override public void onInterrupt() {
@@ -102,7 +103,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     public static boolean requestRunNow() {
         ChatGptAccessibilityService s = instance;
         if (s == null) return false;
-        s.handler.post(() -> s.beginOperation(OP_AUTO));
+        s.handler.post(() -> s.beginOperation(OP_RUN_NOW));
         return true;
     }
 
@@ -111,7 +112,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         if (!AutomationPrefs.enabled(this) || !AutomationPrefs.setupPassed(this)) return;
         long due = AutomationPrefs.nextDue(this);
         if (due <= 0L || System.currentTimeMillis() < due) return;
-        if (!isDeviceReady()) return; // 잠금 중에는 due를 유지하고 기다린다.
+        if (!isDeviceReady()) return;
         beginOperation(OP_AUTO);
     }
 
@@ -120,23 +121,21 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             AutomationPrefs.setStatus(this, "다른 작업이 진행 중이라 요청을 무시함");
             return;
         }
+
         if (!isDeviceReady()) {
             if (OP_AUTO.equals(operation)) AutomationPrefs.defer(this, "화면이 꺼져 있거나 잠금 상태임", 2);
-            else {
-                AutomationPrefs.recordFailure(this, "화면이 꺼져 있거나 잠금 상태임", false);
-                bringControllerToFront();
-            }
+            else AutomationPrefs.recordFailure(this, "화면이 꺼져 있거나 잠금 상태임", false);
             return;
         }
-        if (OP_AUTO.equals(operation) && !AutomationPrefs.setupPassed(this)) {
-            AutomationPrefs.recordFailure(this, "전송 방식 검증이 먼저 필요함", true);
+
+        if ((OP_AUTO.equals(operation) || OP_RUN_NOW.equals(operation)) && !AutomationPrefs.setupPassed(this)) {
+            AutomationPrefs.recordFailure(this, "검증된 전송 방식이 없음", OP_AUTO.equals(operation));
             return;
         }
 
         actionInProgress = true;
-        currentOperation = operation;
-        openedChatGptForOperation = false;
         injectedOurMessage = false;
+        currentOperation = operation;
         int token = ++operationToken;
 
         AccessibilityNodeInfo root = getRootInActiveWindow();
@@ -152,7 +151,6 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             fail(token, "ChatGPT 앱을 열 수 없음");
             return;
         }
-        openedChatGptForOperation = true;
         handler.postDelayed(() -> runOperation(token), AFTER_OPEN_MS);
     }
 
@@ -207,7 +205,6 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             return;
         }
         injectedOurMessage = true;
-
         handler.postDelayed(() -> performSend(token, message, beforeCount), AFTER_TEXT_MS);
     }
 
@@ -235,7 +232,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 + " / IME " + yn(ime)
                 + " / 좌표 " + yn(coord);
         AutomationPrefs.saveInspection(this, editorOk, semantic, ime, coord, summary);
-        finishOperation(token, true);
+        finishOperation(token);
     }
 
     private void performSend(int token, String expectedMessage, int beforeCount) {
@@ -266,10 +263,11 @@ public class ChatGptAccessibilityService extends AccessibilityService {
             fail(token, "입력 내용이 바뀌어 전송하지 않음");
             return;
         }
+
         Rect editorBounds = new Rect();
         editor.getBoundsInScreen(editorBounds);
-
         String method = methodForCurrentOperation();
+
         if (AutomationPrefs.METHOD_SEMANTIC.equals(method)) {
             AccessibilityNodeInfo send = findSemanticSendButton(root, editorBounds);
             editor.recycle();
@@ -290,7 +288,10 @@ public class ChatGptAccessibilityService extends AccessibilityService {
 
         if (AutomationPrefs.METHOD_IME.equals(method)) {
             boolean supported = supportsImeEnter(editor);
-            boolean invoked = supported && editor.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            boolean invoked = false;
+            if (supported && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                invoked = editor.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            }
             editor.recycle();
             root.recycle();
             if (!invoked) {
@@ -303,8 +304,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
 
         if (AutomationPrefs.METHOD_COORD.equals(method)) {
             editor.recycle();
-            Rect rootBounds = new Rect();
-            root.getBoundsInScreen(rootBounds);
+            Rect rootBounds = rootBounds(root);
             root.recycle();
             if (editorBounds.isEmpty() || !dispatchCoordinateSend(token, rootBounds, editorBounds, expectedMessage, beforeCount)) {
                 fail(token, "좌표 전송 동작을 시작하지 못함");
@@ -321,15 +321,11 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         if (OP_TEST_SEMANTIC.equals(currentOperation)) return AutomationPrefs.METHOD_SEMANTIC;
         if (OP_TEST_IME.equals(currentOperation)) return AutomationPrefs.METHOD_IME;
         if (OP_TEST_COORD.equals(currentOperation)) return AutomationPrefs.METHOD_COORD;
-        if (OP_AUTO.equals(currentOperation)) return AutomationPrefs.verifiedMethod(this);
+        if (OP_AUTO.equals(currentOperation) || OP_RUN_NOW.equals(currentOperation)) return AutomationPrefs.verifiedMethod(this);
         return AutomationPrefs.METHOD_NONE;
     }
 
     private boolean dispatchCoordinateSend(int token, Rect rootBounds, Rect editorBounds, String expected, int beforeCount) {
-        if (rootBounds.isEmpty()) {
-            rootBounds.set(0, 0, getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
-        }
-        // 화면 우측 끝이 아니라 실제 입력창 우측 내부를 기준으로 잡는다.
         float x = editorBounds.right - dp(28);
         float y = editorBounds.centerY();
         x = Math.max(rootBounds.left + dp(12), Math.min(x, rootBounds.right - dp(12)));
@@ -362,11 +358,8 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (!isChatGptRoot(root)) {
             if (root != null) root.recycle();
-            if (attempt + 1 < VERIFY_ATTEMPTS) {
-                scheduleVerify(token, expected, beforeCount, method, attempt + 1);
-            } else {
-                fail(token, "전송 후 ChatGPT 화면을 확인하지 못함");
-            }
+            if (attempt + 1 < VERIFY_ATTEMPTS) scheduleVerify(token, expected, beforeCount, method, attempt + 1);
+            else fail(token, "전송 후 ChatGPT 화면을 확인하지 못함");
             return;
         }
 
@@ -377,18 +370,19 @@ public class ChatGptAccessibilityService extends AccessibilityService {
 
         if (generating || (afterCount > beforeCount && !composerStillExact)) {
             injectedOurMessage = false;
-            boolean auto = OP_AUTO.equals(currentOperation);
-            if (auto) AutomationPrefs.markAutoSuccess(this);
-            else AutomationPrefs.verifyMethod(this, method);
-            finishOperation(token, !auto);
+            if (OP_AUTO.equals(currentOperation)) {
+                AutomationPrefs.markAutoSuccess(this);
+            } else if (OP_RUN_NOW.equals(currentOperation)) {
+                AutomationPrefs.setStatus(this, "수동 즉시 실행 성공");
+            } else {
+                AutomationPrefs.verifyMethod(this, method);
+            }
+            finishOperation(token);
             return;
         }
 
-        if (attempt + 1 < VERIFY_ATTEMPTS) {
-            scheduleVerify(token, expected, beforeCount, method, attempt + 1);
-        } else {
-            fail(token, "전송 동작은 했지만 실제 전송 증거를 확인하지 못함");
-        }
+        if (attempt + 1 < VERIFY_ATTEMPTS) scheduleVerify(token, expected, beforeCount, method, attempt + 1);
+        else fail(token, "전송 동작은 했지만 실제 전송 증거를 확인하지 못함");
     }
 
     private boolean composerContainsExact(AccessibilityNodeInfo root, String expected) {
@@ -407,7 +401,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         List<AccessibilityNodeInfo> nodes = flatten(root);
         try {
             for (AccessibilityNodeInfo n : nodes) {
-                if (!n.isVisibleToUser() || n.isEditable() || supportsSetText(n)) continue;
+                if (!n.isVisibleToUser()) continue;
                 CharSequence text = n.getText();
                 if (text != null && expected.equals(text.toString().trim())) count++;
             }
@@ -446,7 +440,6 @@ public class ChatGptAccessibilityService extends AccessibilityService {
                 boolean wide = b.width() >= screen.width() * 0.32f;
                 boolean editorClass = clazz.contains("edittext") || clazz.contains("textfield");
 
-                // isEditable 하나만으로는 절대 통과시키지 않는다.
                 if (!(semantic && lowerEnough) && !(deepBottom && wide && editorClass)) continue;
 
                 int score = 0;
@@ -515,6 +508,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     }
 
     private boolean supportsImeEnter(AccessibilityNodeInfo node) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
         int target = AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId();
         for (AccessibilityNodeInfo.AccessibilityAction a : node.getActionList()) {
             if (a.getId() == target) return true;
@@ -604,7 +598,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
     private void deferAuto(int token, String reason, int minutes) {
         if (!isCurrent(token)) return;
         AutomationPrefs.defer(this, reason, minutes);
-        finishOperation(token, false);
+        finishOperation(token);
     }
 
     private void fail(int token, String reason) {
@@ -612,7 +606,7 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         if (injectedOurMessage) clearInjectedMessageIfStillPresent();
         boolean auto = OP_AUTO.equals(currentOperation);
         AutomationPrefs.recordFailure(this, reason, auto);
-        finishOperation(token, !auto);
+        finishOperation(token);
     }
 
     private void clearInjectedMessageIfStillPresent() {
@@ -637,28 +631,13 @@ public class ChatGptAccessibilityService extends AccessibilityService {
         injectedOurMessage = false;
     }
 
-    private void finishOperation(int token, boolean returnController) {
+    private void finishOperation(int token) {
         if (!isCurrent(token)) return;
-        boolean shouldBack = OP_AUTO.equals(currentOperation) && openedChatGptForOperation;
         actionInProgress = false;
         currentOperation = OP_NONE;
-        openedChatGptForOperation = false;
         injectedOurMessage = false;
         operationToken++;
-
-        if (returnController) {
-            handler.postDelayed(this::bringControllerToFront, 350L);
-        } else if (shouldBack) {
-            handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 700L);
-        }
-    }
-
-    private void bringControllerToFront() {
-        try {
-            Intent i = new Intent(this, MainActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            startActivity(i);
-        } catch (Throwable ignored) {}
+        // v2.1: 여기서 GLOBAL_ACTION_BACK, controller foreground 전환 등 화면 이동을 절대 하지 않는다.
     }
 
     private List<AccessibilityNodeInfo> flatten(AccessibilityNodeInfo root) {
