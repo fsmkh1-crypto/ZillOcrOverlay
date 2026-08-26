@@ -12,6 +12,7 @@ public final class AutomationPrefs {
     public static final String KEY_ENABLED = "enabled";
     public static final String KEY_INTERVAL = "interval_minutes";
     public static final String KEY_MESSAGE = "message";
+    public static final String KEY_CONVERSATION_GUARD = "conversation_guard";
     public static final String KEY_NEXT_DUE = "next_due";
     public static final String KEY_LAST_SENT = "last_sent";
     public static final String KEY_LAST_STATUS = "last_status";
@@ -41,6 +42,11 @@ public final class AutomationPrefs {
         return value.trim();
     }
 
+    public static String conversationGuard(Context c) {
+        String value = get(c).getString(KEY_CONVERSATION_GUARD, "");
+        return value == null ? "" : value.trim();
+    }
+
     public static long nextDue(Context c) {
         return get(c).getLong(KEY_NEXT_DUE, 0L);
     }
@@ -63,9 +69,9 @@ public final class AutomationPrefs {
         get(c).edit()
                 .putLong(KEY_LAST_SENT, now)
                 .putLong(KEY_NEXT_DUE, now + intervalMinutes(c) * 60_000L)
-                .putString(KEY_LAST_STATUS, "전송 완료")
+                .putString(KEY_LAST_STATUS, "전송 확인 완료")
                 .apply();
-        appendLog(c, "전송 완료: " + message(c));
+        appendLog(c, "전송 확인 완료");
     }
 
     public static void retrySoon(Context c, String reason) {
