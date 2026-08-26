@@ -16,7 +16,7 @@ public final class AutomationPrefs {
     public static final String KEY_LAST_SENT = "last_sent";
     public static final String KEY_LAST_STATUS = "last_status";
     public static final String KEY_LOG = "log";
-    public static final String KEY_SETUP_PASSED = "setup_passed";
+    public static final String KEY_SETUP_PASSED = "setup_passed"; // legacy/migration only
     public static final String KEY_VERIFIED_METHOD = "verified_method";
     public static final String KEY_FAIL_COUNT = "fail_count";
     public static final String KEY_INSPECT_EDITOR = "inspect_editor";
@@ -42,10 +42,6 @@ public final class AutomationPrefs {
         return get(c).getBoolean(KEY_ENABLED, false);
     }
 
-    public static boolean setupPassed(Context c) {
-        return get(c).getBoolean(KEY_SETUP_PASSED, false);
-    }
-
     public static int intervalMinutes(Context c) {
         int value = get(c).getInt(KEY_INTERVAL, DEFAULT_INTERVAL_MINUTES);
         return Math.max(1, Math.min(240, value));
@@ -59,7 +55,13 @@ public final class AutomationPrefs {
 
     public static String verifiedMethod(Context c) {
         String value = get(c).getString(KEY_VERIFIED_METHOD, METHOD_NONE);
-        return value == null ? METHOD_NONE : value;
+        if (METHOD_SEMANTIC.equals(value) || METHOD_IME.equals(value) || METHOD_COORD.equals(value)) return value;
+        return METHOD_NONE;
+    }
+
+    // v2.1: 별도 boolean 플래그가 꼬여도 검증된 방식이 저장돼 있으면 검증 완료로 본다.
+    public static boolean setupPassed(Context c) {
+        return !METHOD_NONE.equals(verifiedMethod(c));
     }
 
     public static long nextDue(Context c) {
@@ -67,23 +69,36 @@ public final class AutomationPrefs {
     }
 
     public static void saveBasic(Context c, int interval, String message) {
-        get(c).edit()
-                .putInt(KEY_INTERVAL, Math.max(1, Math.min(240, interval)))
-                .putString(KEY_MESSAGE, message == null || message.trim().isEmpty() ? DEFAULT_MESSAGE : message.trim())
-                .apply();
+        SharedPreferences p = get(c);
+        int oldInterval = intervalMinutes(c);
+        int newInterval = Math.max(1, Math.min(240, interval));
+        String newMessage = message == null || message.trim().isEmpty() ? DEFAULT_MESSAGE : message.trim();
+
+        SharedPreferences.Editor e = p.edit()
+                .putInt(KEY_INTERVAL, newInterval)
+                .putString(KEY_MESSAGE, newMessage);
+
+        // 간격만 바꿔도 검증 방식은 절대 초기화하지 않는다.
+        // 자동 진행 중이라면 새 간격을 즉시 다음 실행 시각에 반영한다.
+        if (p.getBoolean(KEY_ENABLED, false) && oldInterval != newInterval) {
+            e.putLong(KEY_NEXT_DUE, System.currentTimeMillis() + newInterval * 60_000L)
+                    .putString(KEY_LAST_STATUS, "간격 변경 적용: " + newInterval + "분");
+        }
+        e.apply();
     }
 
     public static void setEnabled(Context c, boolean enabled) {
         SharedPreferences.Editor e = get(c).edit().putBoolean(KEY_ENABLED, enabled);
         if (enabled) {
-            e.putLong(KEY_NEXT_DUE, System.currentTimeMillis() + intervalMinutes(c) * 60_000L);
-            e.putString(KEY_LAST_STATUS, "자동 진행 켜짐");
+            e.putLong(KEY_NEXT_DUE, System.currentTimeMillis() + intervalMinutes(c) * 60_000L)
+                    .putInt(KEY_FAIL_COUNT, 0)
+                    .putString(KEY_LAST_STATUS, "자동 진행 켜짐 — " + intervalMinutes(c) + "분 간격");
         } else {
-            e.putLong(KEY_NEXT_DUE, 0L);
-            e.putString(KEY_LAST_STATUS, "자동 진행 꺼짐");
+            e.putLong(KEY_NEXT_DUE, 0L)
+                    .putString(KEY_LAST_STATUS, "자동 진행 꺼짐");
         }
         e.apply();
-        appendLog(c, enabled ? "자동 진행 켜짐" : "자동 진행 꺼짐");
+        appendLog(c, enabled ? "자동 진행 켜짐 — " + intervalMinutes(c) + "분 간격" : "자동 진행 꺼짐");
     }
 
     public static void ensureSchedule(Context c) {
@@ -99,12 +114,12 @@ public final class AutomationPrefs {
     }
 
     public static void defer(Context c, String reason, int minutes) {
-        long when = System.currentTimeMillis() + Math.max(1, minutes) * 60_000L;
+        int delay = Math.max(1, minutes);
         get(c).edit()
-                .putLong(KEY_NEXT_DUE, when)
+                .putLong(KEY_NEXT_DUE, System.currentTimeMillis() + delay * 60_000L)
                 .putString(KEY_LAST_STATUS, "보류: " + reason)
                 .apply();
-        appendLog(c, "보류: " + reason + " — " + Math.max(1, minutes) + "분 뒤 다시 확인");
+        appendLog(c, "보류: " + reason + " — " + delay + "분 뒤 다시 확인");
     }
 
     public static void saveInspection(Context c, boolean editor, boolean semantic, boolean ime, boolean coord, String summary) {
